@@ -225,6 +225,68 @@ const summaryCardConfig: Record<string, { icon: LucideIcon; section: string; act
 const DEFAULT_ITEMS_PER_PAGE = 3;
 const PAGE_SIZE_OPTIONS = [3, 6, 9];
 
+function formatCurrencyAmount(value: number | null | undefined) {
+  return Number(value ?? 0).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function getDepreciationSnapshot({
+  purchaseCost,
+  purchaseDate,
+  purchaseYear,
+  lifespanYears,
+}: {
+  purchaseCost: number | null | undefined;
+  purchaseDate: string | null | undefined;
+  purchaseYear: number | null | undefined;
+  lifespanYears: number | null | undefined;
+}) {
+  const cost = Number(purchaseCost ?? 0);
+  const safeLifespanYears =
+    typeof lifespanYears === "number" && Number.isFinite(lifespanYears) && lifespanYears > 0
+      ? lifespanYears
+      : 4;
+
+  if (!Number.isFinite(cost) || cost <= 0) {
+    return null;
+  }
+
+  const startDate = purchaseDate
+    ? new Date(purchaseDate)
+    : typeof purchaseYear === "number" && Number.isInteger(purchaseYear) && purchaseYear >= 1000
+      ? new Date(`${purchaseYear}-01-01T00:00:00`)
+      : null;
+
+  if (!startDate || Number.isNaN(startDate.getTime())) {
+    return {
+      annualDepreciation: cost / safeLifespanYears,
+      accumulatedDepreciation: 0,
+      bookValue: cost,
+    };
+  }
+
+  const today = new Date();
+  let ageYears = today.getFullYear() - startDate.getFullYear();
+  const monthDelta = today.getMonth() - startDate.getMonth();
+  const dayDelta = today.getDate() - startDate.getDate();
+  if (monthDelta < 0 || (monthDelta === 0 && dayDelta < 0)) {
+    ageYears -= 1;
+  }
+
+  const safeAgeYears = Math.max(ageYears, 0);
+  const annualDepreciation = cost / safeLifespanYears;
+  const accumulatedDepreciation = Math.min(cost, annualDepreciation * safeAgeYears);
+  const bookValue = Math.max(0, cost - accumulatedDepreciation);
+
+  return {
+    annualDepreciation,
+    accumulatedDepreciation,
+    bookValue,
+  };
+}
+
 function AdminDashboardPage({ user, onLogout, onUserUpdate }: AdminDashboardPageProps) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [activeSection, setActiveSection] = useState("overview");
@@ -875,7 +937,7 @@ function AdminDashboardPage({ user, onLogout, onUserUpdate }: AdminDashboardPage
     setActionError("");
 
     try {
-      await downloadAdminExport("/admin/export/users", "admin-users.csv");
+      await downloadAdminExport("/admin/export/users", "admin-users.html");
       setActionMessage("Users export downloaded.");
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Failed to export users.");
@@ -890,7 +952,7 @@ function AdminDashboardPage({ user, onLogout, onUserUpdate }: AdminDashboardPage
     setActionError("");
 
     try {
-      await downloadAdminExport("/admin/export/audit-logs", "admin-audit-logs.csv");
+      await downloadAdminExport("/admin/export/audit-logs", "admin-audit-logs.html");
       setActionMessage("Audit export downloaded.");
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Failed to export audit logs.");
@@ -905,7 +967,7 @@ function AdminDashboardPage({ user, onLogout, onUserUpdate }: AdminDashboardPage
     setActionError("");
 
     try {
-      await downloadAdminExport("/admin/export/assets", "admin-assets.csv");
+      await downloadAdminExport("/admin/export/assets", "admin-assets.html");
       setActionMessage("Assets export downloaded.");
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Failed to export assets.");
@@ -920,7 +982,7 @@ function AdminDashboardPage({ user, onLogout, onUserUpdate }: AdminDashboardPage
     setActionError("");
 
     try {
-      await downloadAdminExport("/admin/export/requests", "admin-requests.csv");
+      await downloadAdminExport("/admin/export/requests", "admin-requests.html");
       setActionMessage("Requests export downloaded.");
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Failed to export requests.");
@@ -1547,7 +1609,7 @@ function AdminDashboardPage({ user, onLogout, onUserUpdate }: AdminDashboardPage
             disabled={isExportingUsers}
           >
             <Download size={16} />
-            {isExportingUsers ? "Exporting..." : "Export CSV"}
+            {isExportingUsers ? "Exporting..." : "Export Document"}
           </button>
           <button
             className="secondary-btn compact-btn"
@@ -1729,7 +1791,7 @@ function AdminDashboardPage({ user, onLogout, onUserUpdate }: AdminDashboardPage
                 disabled={isExportingAssets}
               >
                 <Download size={16} />
-                {isExportingAssets ? "Exporting assets..." : "Export assets"}
+                {isExportingAssets ? "Exporting assets..." : "Export asset document"}
               </button>
               <button
                 className="secondary-btn compact-btn export-btn"
@@ -1738,7 +1800,7 @@ function AdminDashboardPage({ user, onLogout, onUserUpdate }: AdminDashboardPage
                 disabled={isExportingRequests}
               >
                 <Download size={16} />
-                {isExportingRequests ? "Exporting requests..." : "Export requests"}
+                {isExportingRequests ? "Exporting requests..." : "Export request document"}
               </button>
             </div>
           </div>
@@ -1783,17 +1845,36 @@ function AdminDashboardPage({ user, onLogout, onUserUpdate }: AdminDashboardPage
               </div>
               <div className="report-list">
                 {paginatedRecentAssets.map((asset) => (
-                  <article className="report-list-card" key={asset.id}>
-                    <div className="report-list-head">
-                      <strong>{asset.asset_tag}</strong>
-                      <span className={`status-badge status-${asset.status}`}>{asset.status}</span>
-                    </div>
-                    <p>{asset.equipment_name}</p>
-                    <div className="audit-log-meta">
-                      <span>{asset.category_name || "Uncategorized"}</span>
-                      <span>{asset.branch_name || "No location"}</span>
-                    </div>
-                  </article>
+                  (() => {
+                    const depreciation = getDepreciationSnapshot({
+                      purchaseCost: asset.purchase_cost,
+                      purchaseDate: asset.purchase_date,
+                      purchaseYear: asset.purchase_year,
+                      lifespanYears: asset.lifespan_years,
+                    });
+
+                    return (
+                      <article className="report-list-card" key={asset.id}>
+                        <div className="report-list-head">
+                          <strong>{asset.asset_tag}</strong>
+                          <span className={`status-badge status-${asset.status}`}>{asset.status}</span>
+                        </div>
+                        <p>{asset.equipment_name}</p>
+                        <div className="audit-log-meta">
+                          <span>{asset.category_name || "Uncategorized"}</span>
+                          <span>{asset.branch_name || "No location"}</span>
+                        </div>
+                        <div className="audit-log-meta">
+                          <span>
+                            Annual depreciation: {depreciation ? formatCurrencyAmount(depreciation.annualDepreciation) : "Unavailable"}
+                          </span>
+                          <span>
+                            Book value: {depreciation ? formatCurrencyAmount(depreciation.bookValue) : "Unavailable"}
+                          </span>
+                        </div>
+                      </article>
+                    );
+                  })()
                 ))}
                 {reports.recentAssets.length === 0 ? <p className="loading-text">No assets available yet.</p> : null}
               </div>
@@ -2049,7 +2130,7 @@ function AdminDashboardPage({ user, onLogout, onUserUpdate }: AdminDashboardPage
             disabled={isExportingAuditLogs}
           >
             <Download size={16} />
-            {isExportingAuditLogs ? "Exporting..." : "Export CSV"}
+            {isExportingAuditLogs ? "Exporting..." : "Export Document"}
           </button>
         </div>
       </div>

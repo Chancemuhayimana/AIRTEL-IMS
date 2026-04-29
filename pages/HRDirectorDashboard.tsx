@@ -449,20 +449,87 @@ function HRDirectorDashboard({ user, onLogout, onUserUpdate }: HRDirectorDashboa
   const formatReturnReason = (reason?: ReturnRow["return_reason"]) =>
     reason === "leaving_job" ? "Employee leaving organization" : "Standard return";
 
-  const downloadCsv = (filename: string, rows: Array<Record<string, string | number>>) => {
+  const downloadBrandedDocument = (
+    filename: string,
+    title: string,
+    subtitle: string,
+    rows: Array<Record<string, string | number>>,
+  ) => {
     if (rows.length === 0) {
       setActionError("There is no report data to export yet.");
       return;
     }
 
-    const escapeValue = (value: string | number) => `"${String(value ?? "").replace(/"/g, '""')}"`;
     const headers = Object.keys(rows[0]);
-    const csv = [
-      headers.join(","),
-      ...rows.map((row) => headers.map((header) => escapeValue(row[header] ?? "")).join(",")),
-    ].join("\n");
+    const headerLabels = headers.map((header) => header.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()));
+    const generatedOn = new Date().toLocaleString();
+    const logoUrl = `${window.location.origin}/airtel-logo.png`;
+    const escapeHtml = (value: string | number) =>
+      String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
 
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const documentHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${escapeHtml(title)}</title>
+  <style>
+    body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #f4f7fb; color: #17324d; }
+    .page { max-width: 1200px; margin: 0 auto; padding: 32px; }
+    .sheet { background: #ffffff; border-radius: 20px; overflow: hidden; box-shadow: 0 18px 45px rgba(23, 50, 77, 0.12); }
+    .hero { padding: 28px 32px; background: linear-gradient(135deg, #ffffff 0%, #eef6fb 100%); border-bottom: 4px solid #d71920; display: flex; justify-content: space-between; gap: 20px; align-items: center; }
+    .hero img { height: 46px; width: auto; display: block; }
+    .eyebrow { margin: 0 0 8px; font-size: 12px; font-weight: 800; letter-spacing: 0.16em; text-transform: uppercase; color: #d71920; }
+    h1 { margin: 0; font-size: 28px; line-height: 1.2; }
+    .subtitle { margin: 10px 0 0; font-size: 14px; color: #587287; }
+    .meta { text-align: right; font-size: 13px; color: #587287; }
+    .meta strong { display: block; color: #17324d; font-size: 14px; margin-bottom: 6px; }
+    .table-wrap { padding: 22px 32px 32px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; background: #eef6fb; color: #17324d; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; padding: 14px 12px; border-bottom: 1px solid rgba(29, 111, 165, 0.16); }
+    td { padding: 14px 12px; border-bottom: 1px solid rgba(29, 111, 165, 0.12); vertical-align: top; color: #20384d; }
+    tr:nth-child(even) td { background: rgba(238, 246, 251, 0.36); }
+    .footer { padding: 0 32px 28px; color: #587287; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="sheet">
+      <div class="hero">
+        <div>
+          <p class="eyebrow">Airtel Inventory Management System</p>
+          <h1>${escapeHtml(title)}</h1>
+          <p class="subtitle">${escapeHtml(subtitle)}</p>
+        </div>
+        <div class="meta">
+          <img src="${logoUrl}" alt="Airtel logo" />
+          <strong>Professional Export</strong>
+          <span>Generated: ${escapeHtml(generatedOn)}</span>
+          <span>Total records: ${rows.length}</span>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>${headerLabels.map((label) => `<th>${escapeHtml(label)}</th>`).join("")}</tr></thead>
+          <tbody>
+            ${rows
+              .map((row) => `<tr>${headers.map((header) => `<td>${escapeHtml(row[header] ?? "") || "&nbsp;"}</td>`).join("")}</tr>`)
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+      <div class="footer">Generated from Airtel IMS HR Director workflow reporting.</div>
+    </div>
+  </div>
+</body>
+</html>`;
+
+    const blob = new Blob([documentHtml], { type: "text/html;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -1149,8 +1216,10 @@ function HRDirectorDashboard({ user, onLogout, onUserUpdate }: HRDirectorDashboa
             className="secondary-btn compact-btn export-btn"
             type="button"
             onClick={() =>
-              downloadCsv(
-                "hr-director-workflow-report.csv",
+              downloadBrandedDocument(
+                "hr-director-workflow-report.html",
+                "HR Director Workflow Report",
+                "A branded export of workflow requests, approval stages, and request ownership.",
                 filteredWorkflowReportRequests.map((request) => ({
                   request_id: request.id,
                   requester: request.requester_name,
@@ -1166,7 +1235,7 @@ function HRDirectorDashboard({ user, onLogout, onUserUpdate }: HRDirectorDashboa
             }
           >
             <Download size={16} />
-            Export CSV
+            Export Document
           </button>
         </div>
       </div>
@@ -1485,3 +1554,5 @@ function HRDirectorDashboard({ user, onLogout, onUserUpdate }: HRDirectorDashboa
 }
 
 export default HRDirectorDashboard;
+
+

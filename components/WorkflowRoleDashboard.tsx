@@ -36,6 +36,7 @@ import { API_BASE_URL } from "../config";
 import type { LoggedInUser } from "../types";
 
 type RoleView = "branch-manager" | "hr" | "it-manager" | "it-support" | "employee";
+type StockControlView = "available" | "returned" | "retired";
 
 type WorkflowStep = {
   id: number;
@@ -224,6 +225,23 @@ type CategoryRow = {
   id: number;
   name: string;
   depreciation_rate: number;
+};
+
+type DetailEntityType = "request" | "equipment" | "assignment" | "employee" | "return" | "issue" | "maintenance";
+
+type DetailPanelState = {
+  type: DetailEntityType;
+  title: string;
+  subtitle: string;
+  rows: Array<{ label: string; value: string }>;
+  qrEquipment?: EquipmentRow | null;
+};
+
+type ReplacementRiskInsight = {
+  score: number;
+  recommendation: string;
+  reasons: string[];
+  observedOutcome: string;
 };
 
 type IssueRow = {
@@ -700,11 +718,13 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
   const [editingEquipmentId, setEditingEquipmentId] = useState<number | null>(null);
   const [isStockFormOpen, setIsStockFormOpen] = useState(false);
   const [isStockListOpen, setIsStockListOpen] = useState(true);
+  const [stockControlView, setStockControlView] = useState<StockControlView>("available");
   const [requestPageByKey, setRequestPageByKey] = useState<Record<string, number>>({});
   const [returnPageByKey, setReturnPageByKey] = useState<Record<string, number>>({});
   const [pageSizeByKey, setPageSizeByKey] = useState<Record<string, number>>({});
   const [newStockCategoryName, setNewStockCategoryName] = useState("");
   const [selectedBranchEmployeeId, setSelectedBranchEmployeeId] = useState<number | null>(null);
+  const [selectedDetailPanel, setSelectedDetailPanel] = useState<DetailPanelState | null>(null);
   const [selectedQrEquipment, setSelectedQrEquipment] = useState<EquipmentRow | null>(null);
   const [selectedQrAudience, setSelectedQrAudience] = useState<"employee" | "internal">("internal");
   const [equipmentQrImageUrl, setEquipmentQrImageUrl] = useState("");
@@ -789,6 +809,8 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
   const lifecycleEvents = dashboardData?.lifecycleEvents ?? [];
   const smartAlerts = dashboardData?.smartAlerts ?? [];
   const notifications = dashboardData?.notifications ?? [];
+  const [dismissedNotificationIds, setDismissedNotificationIds] = useState<number[]>([]);
+  const unreadNotificationCount = notifications.filter((item) => item.status === "unread" && !dismissedNotificationIds.includes(item.id)).length;
   const currentUser = dashboardData?.currentUser ?? user;
   const selectedStockCategory = categories.find((category) => String(category.id) === stockForm.categoryId);
   const resolvedEquipmentName = selectedStockCategory?.name || stockForm.equipmentName.trim();
@@ -934,6 +956,196 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
   const selectedBranchEmployee = selectedBranchEmployeeAssignments[0] ?? null;
   const getAssignmentsForEmployee = (employeeId: number) =>
     assignments.filter((assignment) => assignment.employee_user_id === employeeId);
+
+  const buildDetailPanel = (type: DetailEntityType, id: number): DetailPanelState | null => {
+    if (type === "request") {
+      const item = requests.find((request) => request.id === id);
+      if (!item) {
+        return null;
+      }
+
+      return {
+        type,
+        title: `Request #${item.id}`,
+        subtitle: `${item.category_name} / ${item.request_status}`,
+        rows: [
+          { label: "Requester", value: item.requester_name },
+          { label: "Type", value: (item.request_type || "standard").replace(/_/g, " ") },
+          { label: "Current stage", value: normalizeWorkflowLabel(item.currentStageLabel) },
+          { label: "Branch", value: item.branch_name || "No branch" },
+          { label: "Requested", value: formatProfileDate(item.requested_at || item.created_at) },
+          { label: "Note", value: item.notes || "No request note provided." },
+        ],
+      };
+    }
+
+    if (type === "equipment") {
+      const item = equipment.find((record) => record.id === id);
+      if (!item) {
+        return null;
+      }
+      const risk = getEquipmentReplacementRisk(item);
+
+      return {
+        type,
+        title: item.asset_tag,
+        subtitle: `${item.equipment_name} / ${item.status}`,
+        qrEquipment: item,
+        rows: [
+          { label: "Serial number", value: item.serial_number },
+          { label: "Category", value: item.category_name || "Not set" },
+          { label: "Branch", value: item.branch_name || "No branch" },
+          { label: "Purchase date", value: formatProfileDate(item.purchase_date) },
+          { label: "Depreciation", value: getEquipmentDepreciationSummary(item) },
+          { label: "Replacement recommendation", value: `${risk.recommendation}: ${risk.score}%` },
+          { label: "Risk factors", value: risk.reasons.join(" / ") },
+          { label: "Observed outcome", value: risk.observedOutcome },
+          { label: "Replacement target", value: getReplacementDate(item.purchase_date, item.lifespan_years, item.purchase_year) },
+          { label: "Specs", value: formatEquipmentSpecs(item) || "Not set" },
+        ],
+      };
+    }
+
+    if (type === "assignment") {
+      const item = assignments.find((record) => record.id === id);
+      if (!item) {
+        return null;
+      }
+      const assignmentEquipment = buildEquipmentRowFromAssignment(item);
+      const risk = getEquipmentReplacementRisk(assignmentEquipment);
+
+      return {
+        type,
+        title: item.asset_tag,
+        subtitle: `${item.equipment_name} assigned to ${item.employee_name}`,
+        qrEquipment: assignmentEquipment,
+        rows: [
+          { label: "Assignment status", value: item.status },
+          { label: "Receipt", value: getAssignmentReceiptLabel(item) },
+          { label: "Assigned date", value: formatProfileDate(item.assigned_at) },
+          { label: "Expected return", value: formatProfileDate(item.expected_return_date) },
+          { label: "Depreciation", value: getAssignmentDepreciationSummary(item) },
+          { label: "Replacement recommendation", value: `${risk.recommendation}: ${risk.score}%` },
+          { label: "Risk factors", value: risk.reasons.join(" / ") },
+          { label: "Observed outcome", value: risk.observedOutcome },
+          { label: "Specs", value: formatAssignmentEquipmentSpecs(item) || "Not set" },
+        ],
+      };
+    }
+
+    if (type === "employee") {
+      const item = employees.find((record) => record.id === id);
+      if (!item) {
+        return null;
+      }
+
+      return {
+        type,
+        title: item.full_name,
+        subtitle: item.email,
+        rows: [
+          { label: "Employee code", value: item.employee_code || "Not set" },
+          { label: "Job title", value: item.job_title || "Not set" },
+          { label: "Department", value: item.department_name || "Not set" },
+          { label: "Office location", value: item.office_location || "Not set" },
+          { label: "HRMS ID", value: item.hrms_employee_id || "Not set" },
+          { label: "Start date", value: formatProfileDate(item.start_date) },
+        ],
+      };
+    }
+
+    return null;
+  };
+
+  const loadEquipmentQrPreview = async (item: EquipmentRow) => {
+    setIsEquipmentQrLoading(true);
+    setEquipmentQrError("");
+
+    try {
+      const audience = roleView === "employee" ? "employee" : "internal";
+      const dataUrl = await QRCode.toDataURL(buildEquipmentQrPayload(item, audience), {
+        width: 240,
+        margin: 2,
+        color: {
+          dark: "#000000",
+          light: "#ffffff",
+        },
+      });
+
+      setSelectedQrEquipment(item);
+      setSelectedQrAudience(audience);
+      setEquipmentQrImageUrl(dataUrl);
+      return dataUrl;
+    } catch (error) {
+      setEquipmentQrError(error instanceof Error ? error.message : "Failed to generate equipment QR code.");
+      return "";
+    } finally {
+      setIsEquipmentQrLoading(false);
+    }
+  };
+
+  const openDetailPanel = async (type: DetailEntityType, id: number) => {
+    const detail = buildDetailPanel(type, id);
+    if (!detail) {
+      return;
+    }
+
+    setSelectedDetailPanel(detail);
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.set("detail", encodeDetailToken(type, id));
+    window.history.replaceState({}, "", `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`);
+
+    if (detail.qrEquipment) {
+      await loadEquipmentQrPreview(detail.qrEquipment);
+    }
+  };
+
+  const closeDetailPanel = () => {
+    setSelectedDetailPanel(null);
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.delete("detail");
+    window.history.replaceState({}, "", `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`);
+  };
+
+  useEffect(() => {
+    const token = new URLSearchParams(window.location.search).get("detail");
+
+    if (!token) {
+      setSelectedDetailPanel(null);
+      return;
+    }
+
+    const decoded = decodeDetailToken(token);
+    if (!decoded) {
+      closeDetailPanel();
+      return;
+    }
+
+    const detail = buildDetailPanel(decoded.type, decoded.id);
+    if (!detail) {
+      closeDetailPanel();
+      return;
+    }
+
+    setSelectedDetailPanel(detail);
+    if (detail.qrEquipment) {
+      void loadEquipmentQrPreview(detail.qrEquipment);
+    }
+  }, [dashboardData]);
+
+  useEffect(() => {
+    if (activeSection !== "notifications") {
+      return;
+    }
+
+    const unreadIds = notifications.filter((item) => item.status === "unread").map((item) => item.id);
+
+    if (unreadIds.length === 0) {
+      return;
+    }
+
+    setDismissedNotificationIds((current) => Array.from(new Set([...current, ...unreadIds])));
+  }, [activeSection, notifications]);
 
   const paginateRows = <T,>(rows: T[], currentPage: number, pageSize: number) =>
     rows.slice((currentPage - 1) * pageSize, currentPage * pageSize);
@@ -1288,6 +1500,309 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
     return replacementDate.toISOString().slice(0, 10);
   };
 
+  const encodeDetailToken = (type: DetailEntityType, id: number) => {
+    const checksum = id * 37 + type.length * 19;
+    const raw = `${type}:${id}:${checksum}`;
+    return window.btoa(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  };
+
+  const decodeDetailToken = (token: string) => {
+    try {
+      const padded = token.replace(/-/g, "+").replace(/_/g, "/");
+      const normalized = padded + "=".repeat((4 - (padded.length % 4 || 4)) % 4);
+      const decoded = window.atob(normalized);
+      const [type, idText, checksumText] = decoded.split(":");
+      const id = Number(idText);
+      const checksum = Number(checksumText);
+
+      if (!["request", "equipment", "assignment", "employee", "return", "issue", "maintenance"].includes(type)) {
+        return null;
+      }
+
+      if (!Number.isInteger(id) || checksum !== id * 37 + type.length * 19) {
+        return null;
+      }
+
+      return { type: type as DetailEntityType, id };
+    } catch {
+      return null;
+    }
+  };
+
+  const formatCurrencyAmount = (value: number | null | undefined) =>
+    Number(value ?? 0).toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+
+  const getDepreciationSnapshot = ({
+    purchaseCost,
+    purchaseDate,
+    purchaseYear,
+    lifespanYears,
+  }: {
+    purchaseCost: number | null | undefined;
+    purchaseDate: string | null | undefined;
+    purchaseYear?: number | null | undefined;
+    lifespanYears: number | null | undefined;
+  }) => {
+    const cost = Number(purchaseCost ?? 0);
+    const safeLifespanYears =
+      typeof lifespanYears === "number" && Number.isFinite(lifespanYears) && lifespanYears > 0
+        ? lifespanYears
+        : 4;
+
+    if (!Number.isFinite(cost) || cost <= 0) {
+      return null;
+    }
+
+    const startDate = purchaseDate
+      ? new Date(purchaseDate)
+      : typeof purchaseYear === "number" && Number.isInteger(purchaseYear) && purchaseYear >= 1000
+        ? new Date(`${purchaseYear}-01-01T00:00:00`)
+        : null;
+
+    if (!startDate || Number.isNaN(startDate.getTime())) {
+      return {
+        annualDepreciation: cost / safeLifespanYears,
+        accumulatedDepreciation: 0,
+        bookValue: cost,
+        ageYears: 0,
+        lifespanYears: safeLifespanYears,
+      };
+    }
+
+    const today = new Date();
+    let ageYears = today.getFullYear() - startDate.getFullYear();
+    const monthDelta = today.getMonth() - startDate.getMonth();
+    const dayDelta = today.getDate() - startDate.getDate();
+    if (monthDelta < 0 || (monthDelta === 0 && dayDelta < 0)) {
+      ageYears -= 1;
+    }
+
+    const safeAgeYears = Math.max(ageYears, 0);
+    const annualDepreciation = cost / safeLifespanYears;
+    const accumulatedDepreciation = Math.min(cost, annualDepreciation * safeAgeYears);
+    const bookValue = Math.max(0, cost - accumulatedDepreciation);
+
+    return {
+      annualDepreciation,
+      accumulatedDepreciation,
+      bookValue,
+      ageYears: safeAgeYears,
+      lifespanYears: safeLifespanYears,
+    };
+  };
+
+  const getEquipmentDepreciationSummary = (item: EquipmentRow) => {
+    const snapshot = getDepreciationSnapshot({
+      purchaseCost: item.purchase_cost,
+      purchaseDate: item.purchase_date,
+      purchaseYear: item.purchase_year,
+      lifespanYears: item.lifespan_years,
+    });
+
+    if (!snapshot) {
+      return "Depreciation: purchase cost not set";
+    }
+
+    return `Depreciation: ${formatCurrencyAmount(snapshot.annualDepreciation)}/year / Book value: ${formatCurrencyAmount(snapshot.bookValue)}`;
+  };
+
+  const getEquipmentDepreciationDetail = (item: EquipmentRow) => {
+    const snapshot = getDepreciationSnapshot({
+      purchaseCost: item.purchase_cost,
+      purchaseDate: item.purchase_date,
+      purchaseYear: item.purchase_year,
+      lifespanYears: item.lifespan_years,
+    });
+
+    if (!snapshot) {
+      return "Accumulated depreciation: unavailable";
+    }
+
+    return `Accumulated: ${formatCurrencyAmount(snapshot.accumulatedDepreciation)} / Age: ${snapshot.ageYears} year(s) of ${snapshot.lifespanYears}`;
+  };
+
+  const getAssignmentDepreciationSummary = (assignment: AssignmentRow) =>
+    getEquipmentDepreciationSummary(buildEquipmentRowFromAssignment(assignment));
+
+  const getAssignmentDepreciationDetail = (assignment: AssignmentRow) =>
+    getEquipmentDepreciationDetail(buildEquipmentRowFromAssignment(assignment));
+
+  const normalizeRiskText = (value: string | null | undefined) => String(value || "").trim().toLowerCase();
+
+  const getRiskDaysBetween = (startAt: string | null | undefined, endAt: string | null | undefined) => {
+    if (!startAt) {
+      return 0;
+    }
+
+    const start = new Date(startAt);
+    const end = endAt ? new Date(endAt) : new Date();
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      return 0;
+    }
+
+    const diff = end.getTime() - start.getTime();
+    return diff > 0 ? Math.ceil(diff / (1000 * 60 * 60 * 24)) : 0;
+  };
+
+  const getObservedReplacementOutcome = (item: EquipmentRow) => {
+    if (item.status === "retired" || item.replacement_disposition === "retired") {
+      return "Retired";
+    }
+
+    if (item.status === "replaced" || item.replacement_request_id || item.replacement_processed_at) {
+      return "Replaced";
+    }
+
+    const itemMaintenanceRecords = maintenanceRecords.filter((record) => record.equipment_id === item.id);
+    if (itemMaintenanceRecords.some((record) => record.maintenance_status === "repaired")) {
+      return "Repaired and kept";
+    }
+
+    return "No final decision yet";
+  };
+
+  const getEquipmentReplacementRisk = (item: EquipmentRow): ReplacementRiskInsight => {
+    const reasons: string[] = [];
+    let score = 0;
+    const snapshot = getDepreciationSnapshot({
+      purchaseCost: item.purchase_cost,
+      purchaseDate: item.purchase_date,
+      purchaseYear: item.purchase_year,
+      lifespanYears: item.lifespan_years,
+    });
+    const itemMaintenanceRecords = maintenanceRecords.filter((record) => record.equipment_id === item.id);
+    const openIssueCount = issues.filter(
+      (issue) => issue.equipment_id === item.id && !["closed", "resolved"].includes(normalizeRiskText(issue.issue_status)),
+    ).length;
+    const latestReturn = returns
+      .filter((record) => record.equipment_id === item.id)
+      .sort(
+        (left, right) =>
+          new Date(right.processed_at || right.returned_at || right.it_reviewed_at || right.requested_at).getTime() -
+          new Date(left.processed_at || left.returned_at || left.it_reviewed_at || left.requested_at).getTime(),
+      )[0];
+    const downtimeDays = itemMaintenanceRecords.reduce(
+      (total, record) => total + getRiskDaysBetween(record.started_at, record.completed_at),
+      0,
+    );
+    const normalizedHealth = normalizeRiskText(item.device_health);
+    const normalizedCondition = normalizeRiskText(latestReturn?.condition_status);
+    const normalizedDisposition = normalizeRiskText(latestReturn?.disposition || item.replacement_disposition);
+
+    if (snapshot) {
+      const ageRatio = snapshot.lifespanYears > 0 ? snapshot.ageYears / snapshot.lifespanYears : 0;
+      if (snapshot.ageYears >= snapshot.lifespanYears) {
+        score += 28;
+        reasons.push(`Reached lifespan limit (${snapshot.ageYears}/${snapshot.lifespanYears} years)`);
+      } else if (ageRatio >= 0.75) {
+        score += 18;
+        reasons.push(`Near replacement window (${snapshot.ageYears}/${snapshot.lifespanYears} years used)`);
+      } else if (ageRatio >= 0.5) {
+        score += 8;
+      }
+
+      if ((item.purchase_cost ?? 0) > 0 && snapshot.bookValue <= (item.purchase_cost ?? 0) * 0.2 && snapshot.ageYears >= 2) {
+        score += 10;
+        reasons.push(`Low remaining book value (${formatCurrencyAmount(snapshot.bookValue)})`);
+      }
+    }
+
+    if (item.warranty_end_date) {
+      const warrantyEnd = new Date(item.warranty_end_date);
+      if (!Number.isNaN(warrantyEnd.getTime())) {
+        const daysToWarrantyEnd = Math.ceil((warrantyEnd.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+        if (daysToWarrantyEnd < 0) {
+          score += 15;
+          reasons.push("Out of warranty");
+        } else if (daysToWarrantyEnd <= 90) {
+          score += 8;
+          reasons.push(`Warranty ends in ${daysToWarrantyEnd} day(s)`);
+        }
+      }
+    }
+
+    if (itemMaintenanceRecords.length >= 4) {
+      score += 24;
+      reasons.push(`${itemMaintenanceRecords.length} maintenance events`);
+    } else if (itemMaintenanceRecords.length >= 2) {
+      score += 14;
+      reasons.push(`${itemMaintenanceRecords.length} maintenance events`);
+    } else if (itemMaintenanceRecords.length === 1) {
+      score += 6;
+    }
+
+    if (openIssueCount >= 3) {
+      score += 18;
+      reasons.push(`${openIssueCount} unresolved issues`);
+    } else if (openIssueCount >= 1) {
+      score += 8;
+      reasons.push(`${openIssueCount} unresolved issue${openIssueCount > 1 ? "s" : ""}`);
+    }
+
+    if (downtimeDays >= 30) {
+      score += 18;
+      reasons.push(`${downtimeDays} downtime day(s)`);
+    } else if (downtimeDays >= 14) {
+      score += 10;
+      reasons.push(`${downtimeDays} downtime day(s)`);
+    } else if (downtimeDays > 0) {
+      score += 4;
+    }
+
+    if (["faulty", "poor", "damaged", "bad", "critical", "broken"].some((keyword) => normalizedHealth.includes(keyword))) {
+      score += 20;
+      reasons.push(`Device health marked as ${item.device_health}`);
+    } else if (["fair", "warning", "aging"].some((keyword) => normalizedHealth.includes(keyword))) {
+      score += 10;
+      reasons.push(`Device health marked as ${item.device_health}`);
+    }
+
+    if (["damaged", "broken", "faulty", "poor", "not compatible"].some((keyword) => normalizedCondition.includes(keyword))) {
+      score += 16;
+      reasons.push(`Latest return condition: ${latestReturn?.condition_status}`);
+    } else if (normalizedCondition) {
+      score += 6;
+    }
+
+    if (["retired", "dispose", "disposed", "scrap", "not repairable"].some((keyword) => normalizedDisposition.includes(keyword))) {
+      score += 25;
+      reasons.push(`Latest disposition: ${latestReturn?.disposition || item.replacement_disposition}`);
+    } else if (normalizedDisposition.includes("maintenance")) {
+      score += 8;
+    }
+
+    if (item.replacement_request_id || item.replacement_processed_at || item.status === "replaced") {
+      score += 12;
+      reasons.push("Previously part of a replacement workflow");
+    }
+
+    if (["network", "server", "storage"].some((keyword) => normalizeRiskText(item.category_name).includes(keyword))) {
+      score += 6;
+    }
+
+    const finalScore = Math.max(0, Math.min(Math.round(score), 100));
+    let recommendation = "Keep in service";
+    if (finalScore >= 75) {
+      recommendation = "Replace recommended";
+    } else if (finalScore >= 50) {
+      recommendation = "Review for replacement";
+    }
+
+    if (reasons.length === 0) {
+      reasons.push("No major replacement signals detected yet");
+    }
+
+    return {
+      score: finalScore,
+      recommendation,
+      reasons,
+      observedOutcome: getObservedReplacementOutcome(item),
+    };
+  };
+
   const formatQrStatusLabel = (status: EquipmentRow["status"]) => {
     if (status === "replaced") {
       return "Replaced";
@@ -1318,6 +1833,7 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
           `Accessories: ${formatEquipmentAccessories(item) || "Not set"}`,
           `Accessory Notes: ${formatEquipmentAccessoryNotes(item) || "None"}`,
           `Warranty: ${formatQrDate(item.warranty_end_date)}`,
+          `${getEquipmentDepreciationSummary(item)}`,
           "Support: Share the asset tag with IT Support.",
         ].join("\n")
       : [
@@ -1341,34 +1857,19 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
           `Cost: ${Number(item.purchase_cost ?? 0).toLocaleString()}`,
           `Warranty: ${formatQrDate(item.warranty_end_date)}`,
           `Lifespan: ${item.lifespan_years ?? 4} years`,
+          `${getEquipmentDepreciationSummary(item)}`,
+          `${getEquipmentDepreciationDetail(item)}`,
           `Replace By: ${getReplacementDate(item.purchase_date, item.lifespan_years, item.purchase_year)}`,
         ].join("\n");
 
   const handlePreviewEquipmentQr = async (item: EquipmentRow, targetSection: string = activeSection) => {
-    setIsEquipmentQrLoading(true);
-    setEquipmentQrError("");
-
-    try {
-      const audience = roleView === "employee" ? "employee" : "internal";
-      const dataUrl = await QRCode.toDataURL(buildEquipmentQrPayload(item, audience), {
-        width: 240,
-        margin: 2,
-        color: {
-          dark: "#000000",
-          light: "#ffffff",
-        },
-      });
-
-      setSelectedQrEquipment(item);
-      setSelectedQrAudience(audience);
-      setEquipmentQrImageUrl(dataUrl);
-      setActiveSection(targetSection);
-      window.location.hash = "equipment-qr-panel";
-    } catch (error) {
-      setEquipmentQrError(error instanceof Error ? error.message : "Failed to generate equipment QR code.");
-    } finally {
-      setIsEquipmentQrLoading(false);
+    const dataUrl = await loadEquipmentQrPreview(item);
+    if (!dataUrl) {
+      return;
     }
+
+    setActiveSection(targetSection);
+    window.location.hash = "equipment-qr-panel";
   };
 
   const handleDownloadEquipmentQr = () => {
@@ -2195,21 +2696,93 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
     return firstStep?.action_status === "pending";
   };
 
-  const exportCsv = (filename: string, rows: Record<string, string | number | null | undefined>[]) => {
+  const exportBrandedDocument = (
+    filename: string,
+    title: string,
+    subtitle: string,
+    rows: Record<string, string | number | null | undefined>[],
+  ) => {
     if (rows.length === 0) {
       setActionError("There is no data to export for this report.");
       return;
     }
 
     const headers = Object.keys(rows[0]);
-    const escapeValue = (value: string | number | null | undefined) =>
-      `"${String(value ?? "").replace(/"/g, '""')}"`;
-    const csv = [
-      headers.join(","),
-      ...rows.map((row) => headers.map((header) => escapeValue(row[header])).join(",")),
-    ].join("\n");
+    const headerLabels = headers.map((header) => header.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()));
+    const generatedOn = new Date().toLocaleString();
+    const logoUrl = `${window.location.origin}/airtel-logo.png`;
+    const escapeHtml = (value: string | number | null | undefined) =>
+      String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
 
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const tableHead = headerLabels.map((label) => `<th>${escapeHtml(label)}</th>`).join("");
+    const tableBody = rows
+      .map(
+        (row) =>
+          `<tr>${headers
+            .map((header) => `<td>${escapeHtml(row[header]) || "&nbsp;"}</td>`)
+            .join("")}</tr>`,
+      )
+      .join("");
+
+    const documentHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${escapeHtml(title)}</title>
+  <style>
+    body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #f4f7fb; color: #17324d; }
+    .page { max-width: 1200px; margin: 0 auto; padding: 32px; }
+    .sheet { background: #ffffff; border-radius: 20px; overflow: hidden; box-shadow: 0 18px 45px rgba(23, 50, 77, 0.12); }
+    .hero { padding: 28px 32px; background: linear-gradient(135deg, #ffffff 0%, #eef6fb 100%); border-bottom: 4px solid #d71920; display: flex; justify-content: space-between; gap: 20px; align-items: center; }
+    .hero img { height: 46px; width: auto; display: block; }
+    .eyebrow { margin: 0 0 8px; font-size: 12px; font-weight: 800; letter-spacing: 0.16em; text-transform: uppercase; color: #d71920; }
+    h1 { margin: 0; font-size: 28px; line-height: 1.2; }
+    .subtitle { margin: 10px 0 0; font-size: 14px; color: #587287; }
+    .meta { text-align: right; font-size: 13px; color: #587287; }
+    .meta strong { display: block; color: #17324d; font-size: 14px; margin-bottom: 6px; }
+    .table-wrap { padding: 22px 32px 32px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; background: #eef6fb; color: #17324d; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; padding: 14px 12px; border-bottom: 1px solid rgba(29, 111, 165, 0.16); }
+    td { padding: 14px 12px; border-bottom: 1px solid rgba(29, 111, 165, 0.12); vertical-align: top; color: #20384d; }
+    tr:nth-child(even) td { background: rgba(238, 246, 251, 0.36); }
+    .footer { padding: 0 32px 28px; color: #587287; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="sheet">
+      <div class="hero">
+        <div>
+          <p class="eyebrow">Airtel Inventory Management System</p>
+          <h1>${escapeHtml(title)}</h1>
+          <p class="subtitle">${escapeHtml(subtitle)}</p>
+        </div>
+        <div class="meta">
+          <img src="${logoUrl}" alt="Airtel logo" />
+          <strong>Professional Export</strong>
+          <span>Generated: ${escapeHtml(generatedOn)}</span>
+          <span>Total records: ${rows.length}</span>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>${tableHead}</tr></thead>
+          <tbody>${tableBody}</tbody>
+        </table>
+      </div>
+      <div class="footer">Generated from Airtel IMS workflow dashboard.</div>
+    </div>
+  </div>
+</body>
+</html>`;
+
+    const blob = new Blob([documentHtml], { type: "text/html;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -2219,8 +2792,10 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
   };
 
   const handleExportTimeline = () => {
-    exportCsv(
-      `${roleView}-request-timeline.csv`,
+    exportBrandedDocument(
+      `${roleView}-request-timeline.html`,
+      "Workflow Timeline Report",
+      "A consolidated view of request progress, branches, approvers, and current workflow stages.",
       timelineRequests.map((request) => ({
         request_id: request.id,
         requester: request.requester_name,
@@ -2322,7 +2897,12 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
           : []),
       ];
 
-    exportCsv(`${roleView}-reports.csv`, reportRows);
+    exportBrandedDocument(
+      `${roleView}-reports.html`,
+      "Workflow Report Export",
+      "Airtel IMS request, asset, and assignment reporting snapshot.",
+      reportRows,
+    );
   };
 
   const reportRequestSource =
@@ -2373,16 +2953,19 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
     const currentPage = Math.min(requestPageByKey[pageKey] || 1, totalPages);
     const paginatedRows = paginateRows(requestRows, currentPage, pageSize);
 
-    const listClassName =
-      roleView === "employee" && mode === "view"
-        ? "mini-list request-card-grid employee-request-grid"
-        : "mini-list request-card-grid";
-
     return (
-      <div className={listClassName}>
+      <div className="user-table workflow-request-table">
+        <div className="user-table-head workflow-request-table-head">
+          <span>Request</span>
+          <span>Requester</span>
+          <span>Employee / Context</span>
+          <span>Workflow</span>
+          <span>Notes</span>
+          <span>Actions</span>
+        </div>
         {requestRows.length > 0 ? (
           paginatedRows.map((request) => (
-          <article className="mini-list-card action-card" key={request.id}>
+          <div className="user-table-row workflow-request-table-row" key={request.id}>
             {(() => {
               const hrmsSnapshot = parseHrmsSnapshot(request.hrms_snapshot);
               const employeeName = request.target_employee_name || hrmsSnapshot.employeeName;
@@ -2397,144 +2980,135 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
 
               return (
                 <>
-            <strong>
-              {request.requester_name} / {request.category_name}
-            </strong>
-              <span>
-                <span className={`status-pill status-${request.request_status}`}>{request.request_status}</span>
-                {" "}
-                {request.branch_name || "No branch"} / {normalizeWorkflowLabel(request.currentStageLabel)}
-              </span>
-            <span>
-              {request.requester_department_name || request.requester_job_title || "No department"} / {request.requester_employment_status || "No employment status"}
-            </span>
-            <span>Type: {(request.request_type || "standard").replace("_", " ")}</span>
-            <span>
-              {request.requester_office_location || "No office location"} / Requested: {formatProfileDate(request.requested_at || request.created_at)}
-            </span>
-            {request.target_employee_name ? (
-              <span>
-                For employee: {request.target_employee_name}
-                {request.target_employee_email ? ` / ${request.target_employee_email}` : ""}
-              </span>
-            ) : null}
-            {employeeName ? (
-              <div className="workflow-step-list request-employee-details">
-                <div className="workflow-step-row">
-                  <strong>Employee profile</strong>
-                  <span>{employeeName}{request.target_employee_email || hrmsSnapshot.employeeEmail ? ` / ${request.target_employee_email || hrmsSnapshot.employeeEmail}` : ""}</span>
-                </div>
-                <div className="workflow-step-row">
-                  <strong>Role and department</strong>
-                  <span>{employeeRole || "No role captured"} / {request.target_employee_department_name || "No department captured"}</span>
-                </div>
-                <div className="workflow-step-row">
-                  <strong>HRMS details</strong>
-                  <span>{employeeHrmsId || "No HRMS id"} / {employeeCode || "No employee code"} / {employeeGrade || "No employee grade"}</span>
-                </div>
-                <div className="workflow-step-row">
-                  <strong>Work context</strong>
-                  <span>{employeeLocation || "No office location"} / {employeeEmploymentStatus || "No employment status"} / Start {formatProfileDate(employeeStartDate)}</span>
-                </div>
-                <div className="workflow-step-row">
-                  <strong>Expected device specs</strong>
-                  <span>{expectedDeviceSpecs || "No expected device specs were captured."}</span>
-                </div>
-              </div>
-            ) : null}
-            <span>{request.notes || "No request note provided."}</span>
-            {request.clarification_status === "needed" && request.clarification_note ? (
-              <p className="form-message warning-text">
-                Clarification needed: {request.clarification_note}
-              </p>
-            ) : null}
-            {request.request_status === "rejected" ? (
-              <p className="form-message error-text">
-                Rejection reason:{" "}
-                {request.workflowSteps.find((step) => step.action_status === "rejected")?.action_note ||
-                  request.notes ||
-                  "No rejection reason was recorded."}
-              </p>
-            ) : null}
-            {request.fulfillment_status && request.fulfillment_status !== "ready" ? (
-              <span>
-                Store status: <span className={`status-pill status-${request.fulfillment_status}`}>{request.fulfillment_status.replace("_", " ")}</span>
-                {request.fulfillment_note ? ` / ${request.fulfillment_note}` : ""}
-              </span>
-            ) : null}
-            {roleView === "employee" && mode === "view" ? (
-              (() => {
-                const nextPendingStep = request.workflowSteps.find((step) => step.action_status === "pending");
-
-                if (request.request_status === "fulfilled") {
-                  return (
-                    <div className="workflow-step-row workflow-step-inline">
-                      <strong>Request complete</strong>
-                      <span>Equipment has been delivered.</span>
-                    </div>
-                  );
-                }
-
-                if (request.request_status === "rejected") {
-                  return (
-                    <div className="workflow-step-row workflow-step-inline">
-                      <strong>Request rejected</strong>
-                      <span>
-                        {normalizeWorkflowLabel(
-                          request.workflowSteps.find((step) => step.action_status === "rejected")?.step_label || "Approval workflow",
-                        )}
-                      </span>
-                    </div>
-                  );
-                }
-
-                if (nextPendingStep) {
-                  return (
-                    <div className="workflow-step-row workflow-step-inline">
-                      <strong>Waiting for approval</strong>
-                      <span>{nextPendingStep.actor_role} to approve.</span>
-                    </div>
-                  );
-                }
-
-                return (
-                  <div className="workflow-step-row workflow-step-inline">
-                    <strong>Approval complete</strong>
-                    <span>Waiting for fulfillment and handover.</span>
-                  </div>
-                );
-              })()
-            ) : (
-              <div className="workflow-step-list">
-                {request.workflowSteps.map((step) => (
-                  <div className="workflow-step-row" key={step.id}>
-                    <strong>{normalizeWorkflowLabel(step.step_label)}</strong>
+                  <div className="user-primary-cell">
+                    <strong>{request.category_name}</strong>
+                    <span>Request #{request.id}</span>
+                    <span>Type: {(request.request_type || "standard").replace("_", " ")}</span>
                     <span>
-                      {step.action_status}
-                      {step.actor_name ? ` / ${step.actor_name}` : ""}
+                      <span className={`status-pill status-${request.request_status}`}>{request.request_status}</span>
                     </span>
-                    {step.action_note ? <span>{step.action_note}</span> : null}
                   </div>
-                ))}
-              </div>
-            )}
+                  <div className="user-secondary-cell">
+                    <strong>{request.requester_name}</strong>
+                    <span>{request.requester_department_name || request.requester_job_title || "No department"}</span>
+                    <span>{request.requester_employment_status || "No employment status"}</span>
+                    <span>{request.requester_office_location || "No office location"} / Requested: {formatProfileDate(request.requested_at || request.created_at)}</span>
+                  </div>
+                  <div className="workflow-table-stack">
+                    <div className="user-secondary-cell">
+                      <strong>{employeeName || "No target employee"}</strong>
+                      <span>{request.target_employee_email || hrmsSnapshot.employeeEmail || "No email"}</span>
+                      <span>{employeeRole || "No role captured"} / {request.target_employee_department_name || "No department captured"}</span>
+                      <span>{employeeHrmsId || "No HRMS id"} / {employeeCode || "No employee code"} / {employeeGrade || "No employee grade"}</span>
+                      <span>{employeeLocation || "No office location"} / {employeeEmploymentStatus || "No employment status"} / Start {formatProfileDate(employeeStartDate)}</span>
+                      <span>{expectedDeviceSpecs || "No expected device specs were captured."}</span>
+                    </div>
+                  </div>
+                  <div className="workflow-table-stack">
+                    <div className="user-secondary-cell">
+                      <strong>{request.branch_name || "No branch"}</strong>
+                      <span>{normalizeWorkflowLabel(request.currentStageLabel)}</span>
+                      {request.fulfillment_status && request.fulfillment_status !== "ready" ? (
+                        <span>
+                          Store status: <span className={`status-pill status-${request.fulfillment_status}`}>{request.fulfillment_status.replace("_", " ")}</span>
+                          {request.fulfillment_note ? ` / ${request.fulfillment_note}` : ""}
+                        </span>
+                      ) : null}
+                    </div>
+                    {roleView === "employee" && mode === "view" ? (
+                      (() => {
+                        const nextPendingStep = request.workflowSteps.find((step) => step.action_status === "pending");
+
+                        if (request.request_status === "fulfilled") {
+                          return (
+                            <div className="workflow-step-row workflow-step-inline">
+                              <strong>Request complete</strong>
+                              <span>Equipment has been delivered.</span>
+                            </div>
+                          );
+                        }
+
+                        if (request.request_status === "rejected") {
+                          return (
+                            <div className="workflow-step-row workflow-step-inline">
+                              <strong>Request rejected</strong>
+                              <span>
+                                {normalizeWorkflowLabel(
+                                  request.workflowSteps.find((step) => step.action_status === "rejected")?.step_label || "Approval workflow",
+                                )}
+                              </span>
+                            </div>
+                          );
+                        }
+
+                        if (nextPendingStep) {
+                          return (
+                            <div className="workflow-step-row workflow-step-inline">
+                              <strong>Waiting for approval</strong>
+                              <span>{nextPendingStep.actor_role} to approve.</span>
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <div className="workflow-step-row workflow-step-inline">
+                            <strong>Approval complete</strong>
+                            <span>Waiting for fulfillment and handover.</span>
+                          </div>
+                        );
+                      })()
+                    ) : (
+                      <div className="workflow-step-list">
+                        {request.workflowSteps.map((step) => (
+                          <div className="workflow-step-row" key={step.id}>
+                            <strong>{normalizeWorkflowLabel(step.step_label)}</strong>
+                            <span>
+                              {step.action_status}
+                              {step.actor_name ? ` / ${step.actor_name}` : ""}
+                            </span>
+                            {step.action_note ? <span>{step.action_note}</span> : null}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div className="workflow-table-stack">
+                    <div className="user-secondary-cell">
+                      <strong>{request.notes || "No request note provided."}</strong>
+                      {request.clarification_status === "needed" && request.clarification_note ? (
+                        <span className="warning-text">Clarification needed: {request.clarification_note}</span>
+                      ) : null}
+                      {request.request_status === "rejected" ? (
+                        <span className="error-text">
+                          Rejection reason:{" "}
+                          {request.workflowSteps.find((step) => step.action_status === "rejected")?.action_note ||
+                            request.notes ||
+                            "No rejection reason was recorded."}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
                 </>
               );
             })()}
 
+            <div className="workflow-table-actions">
             {mode === "view" ? (
-              canRequesterUpdateRequest(request) ? (
-                <div className="card-action-row">
-                  <button className="secondary-btn compact-btn" type="button" onClick={() => handleEditRequest(request)}>
+                <div className="table-action-group workflow-stock-table-actions">
+                  <button className="table-action" type="button" onClick={() => void openDetailPanel("request", request.id)}>
+                    View details
+                  </button>
+                  {canRequesterUpdateRequest(request) ? (
+                  <button className="table-action" type="button" onClick={() => handleEditRequest(request)}>
                     Update request
                   </button>
-                  {roleView === "employee" && request.clarification_status !== "needed" ? (
-                    <button className="secondary-btn compact-btn btn-soft-danger" type="button" onClick={() => void handleDeleteRequest(request.id)}>
+                  ) : null}
+                  {roleView === "employee" && request.clarification_status !== "needed" && canRequesterUpdateRequest(request) ? (
+                    <button className="table-action table-action-danger" type="button" onClick={() => void handleDeleteRequest(request.id)}>
                       Delete
                     </button>
                   ) : null}
                 </div>
-              ) : null
             ) : (
               <div className="card-form-stack">
                 {mode === "approve" ? (
@@ -2813,7 +3387,8 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
                 )}
               </div>
             )}
-          </article>
+            </div>
+          </div>
           ))
         ) : (
           <p className="loading-text">No records are waiting in this section.</p>
@@ -3589,6 +4164,10 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
                           <span>{formatAssignmentEquipmentSpecs(assignment)}</span>
                         </div>
                       ) : null}
+                      <div className="workflow-step-row">
+                        <strong>Depreciation</strong>
+                        <span>{getAssignmentDepreciationSummary(assignment)}</span>
+                      </div>
                       <div className="card-action-row">
                         <button className="secondary-btn compact-btn" type="button" onClick={() => void handlePreviewEquipmentQr(buildEquipmentRowFromAssignment(assignment), activeSection)}>
                           QR code
@@ -3665,42 +4244,66 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
             <h4>Assigned Items</h4>
             <span>{branchAssignedEquipment.length} assigned</span>
           </div>
-          <div className="mini-list stock-grid">
+          <div className="user-table workflow-assignment-table">
+            <div className="user-table-head workflow-assignment-table-head">
+              <span>Asset</span>
+              <span>Status / Type</span>
+              <span>Assigned To</span>
+              <span>Assigned / Return</span>
+              <span>Depreciation</span>
+              <span>Specs</span>
+              <span>Actions</span>
+            </div>
             {branchAssignedEquipment.length > 0 ? (
               branchAssignedEquipment.map((item) => {
                 const assignment = branchAssignmentMap.get(item.id);
 
                 return (
-                  <article className="mini-list-card action-card stock-card" key={item.id}>
-                    <strong>{item.asset_tag}</strong>
-                    <span>
-                      <span className={`status-pill status-${item.status}`}>{item.status}</span>
-                      {" "}
-                      {item.equipment_name}
-                    </span>
-                    <span>{item.category_name || "No category"} / {item.branch_name || "No branch"}</span>
-                    {formatEquipmentSpecs(item) ? <span>{formatEquipmentSpecs(item)}</span> : null}
-                    <span>
-                      Assigned to: {assignment?.employee_name || "Not assigned"} / {assignment?.employee_email || "No email"}
-                    </span>
-                    <span>
-                      Assigned on: {assignment?.assigned_at ? assignment.assigned_at.slice(0, 10) : "Not set"} / Return: {assignment?.expected_return_date ? assignment.expected_return_date.slice(0, 10) : "Not set"}
-                    </span>
-                    <div className="card-action-row">
+                  <div className="user-table-row workflow-assignment-table-row" key={item.id}>
+                    <div className="user-primary-cell">
+                      <strong>{item.asset_tag}</strong>
+                      <span>{item.serial_number}</span>
+                    </div>
+                    <div className="user-secondary-cell">
+                      <strong>{item.equipment_name}</strong>
+                      <span>
+                        <span className={`status-pill status-${item.status}`}>{item.status}</span>
+                      </span>
+                    </div>
+                    <div className="user-secondary-cell">
+                      <strong>{assignment?.employee_name || "Not assigned"}</strong>
+                      <span>{assignment?.employee_email || "No email"}</span>
+                    </div>
+                    <div className="user-secondary-cell">
+                      <strong>{assignment?.assigned_at ? assignment.assigned_at.slice(0, 10) : "Not set"}</strong>
+                      <span>Return: {assignment?.expected_return_date ? assignment.expected_return_date.slice(0, 10) : "Not set"}</span>
+                    </div>
+                    <div className="user-secondary-cell">
+                      <strong>{getEquipmentDepreciationSummary(item)}</strong>
+                      <span>{getEquipmentDepreciationDetail(item)}</span>
+                    </div>
+                    <div className="user-secondary-cell">
+                      <strong>{item.category_name || "No category"}</strong>
+                      <span>{formatEquipmentSpecs(item) || "No specs"}</span>
+                    </div>
+                    <div className="table-action-group workflow-stock-table-actions">
                       {assignment ? (
                         <button
-                          className="secondary-btn compact-btn"
+                          className="table-action"
                           type="button"
                           onClick={() => setSelectedBranchEmployeeId(assignment.employee_user_id)}
                         >
                           View history
                         </button>
                       ) : null}
-                      <button className="secondary-btn compact-btn" type="button" onClick={() => void handlePreviewEquipmentQr(item)}>
+                      <button className="table-action" type="button" onClick={() => void openDetailPanel("equipment", item.id)}>
+                        View details
+                      </button>
+                      <button className="table-action" type="button" onClick={() => void handlePreviewEquipmentQr(item)}>
                         QR code
                       </button>
                     </div>
-                  </article>
+                  </div>
                 );
               })
             ) : (
@@ -3712,32 +4315,59 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
             <h4>Available Items</h4>
             <span>{branchAvailableEquipment.length} available</span>
           </div>
-          <div className="mini-list stock-grid">
+          <div className="user-table workflow-stock-table">
+            <div className="user-table-head workflow-stock-table-head">
+              <span>Asset</span>
+              <span>Status / Type</span>
+              <span>Location</span>
+              <span>Cost / Warranty</span>
+              <span>Depreciation</span>
+              <span>Lifespan / Replace By</span>
+              <span>Notes</span>
+              <span>Actions</span>
+            </div>
             {branchAvailableEquipment.length > 0 ? (
               branchAvailableEquipment.map((item) => (
-                <article className="mini-list-card action-card stock-card" key={item.id}>
-                  <strong>{item.asset_tag}</strong>
-                  <span>
-                    <span className={`status-pill status-${item.status}`}>{item.status}</span>
-                    {" "}
-                    {item.equipment_name}
-                  </span>
-                  <span>{item.category_name || "No category"} / {item.branch_name || "No branch"}</span>
-                  {getReplacementStockLabel(item) ? (
-                    <span>{getReplacementStockLabel(item)}</span>
-                  ) : null}
-                  {item.replacement_condition_status ? (
-                    <span>Replacement condition: {item.replacement_condition_status}</span>
-                  ) : null}
-                  <span>
-                    Cost: {item.purchase_cost ? Number(item.purchase_cost).toLocaleString() : "0"} / Warranty: {item.warranty_end_date ? item.warranty_end_date.slice(0, 10) : "Not set"}
-                  </span>
-                  <div className="card-action-row">
-                    <button className="secondary-btn compact-btn" type="button" onClick={() => void handlePreviewEquipmentQr(item)}>
+                <div className="user-table-row workflow-stock-table-row" key={item.id}>
+                  <div className="user-primary-cell">
+                    <strong>{item.asset_tag}</strong>
+                    <span>{item.serial_number}</span>
+                  </div>
+                  <div className="user-secondary-cell">
+                    <strong>{item.equipment_name}</strong>
+                    <span>
+                      <span className={`status-pill status-${item.status}`}>{item.status}</span>
+                    </span>
+                  </div>
+                  <div className="user-secondary-cell">
+                    <strong>{item.category_name || "No category"}</strong>
+                    <span>{item.branch_name || "No branch"}</span>
+                  </div>
+                  <div className="user-secondary-cell">
+                    <strong>{item.purchase_cost ? Number(item.purchase_cost).toLocaleString() : "0"}</strong>
+                    <span>Warranty: {item.warranty_end_date ? item.warranty_end_date.slice(0, 10) : "Not set"}</span>
+                  </div>
+                  <div className="user-secondary-cell">
+                    <strong>{getEquipmentDepreciationSummary(item)}</strong>
+                    <span>{getEquipmentDepreciationDetail(item)}</span>
+                  </div>
+                  <div className="user-secondary-cell">
+                    <strong>{item.lifespan_years ?? 4} years</strong>
+                    <span>{getReplacementDate(item.purchase_date, item.lifespan_years, item.purchase_year)}</span>
+                  </div>
+                  <div className="user-secondary-cell">
+                    <strong>{getReplacementStockLabel(item) || "Ready for assignment"}</strong>
+                    <span>{item.replacement_condition_status || "No replacement note"}</span>
+                  </div>
+                  <div className="table-action-group workflow-stock-table-actions">
+                    <button className="table-action" type="button" onClick={() => void openDetailPanel("equipment", item.id)}>
+                      View details
+                    </button>
+                    <button className="table-action" type="button" onClick={() => void handlePreviewEquipmentQr(item)}>
                       QR code
                     </button>
                   </div>
-                </article>
+                </div>
               ))
             ) : (
               <p className="loading-text">No available items are left in this branch.</p>
@@ -3783,7 +4413,7 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
                 ))}
               </div>
             ) : (
-              <p className="loading-text">Select an assigned employee from the asset cards to view their assignment history.</p>
+              <p className="loading-text">Select an assigned employee from the asset table to view their assignment history.</p>
             )}
           </div>
 
@@ -3824,6 +4454,12 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
                   </p>
                   <p>
                     <strong>Purchase cost:</strong> {Number(selectedQrEquipment.purchase_cost ?? 0).toLocaleString()}
+                  </p>
+                  <p>
+                    <strong>Annual depreciation:</strong> {getEquipmentDepreciationSummary(selectedQrEquipment)}
+                  </p>
+                  <p>
+                    <strong>Depreciation detail:</strong> {getEquipmentDepreciationDetail(selectedQrEquipment)}
                   </p>
                   <p>
                     <strong>Computer name:</strong> {selectedQrEquipment.computer_name || "Not set"}
@@ -3917,6 +4553,9 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
                             </div>
                           ) : null}
                           <div className="card-action-row">
+                            <button className="secondary-btn compact-btn" type="button" onClick={() => openDetailPanel("employee", employee.id)}>
+                              View details
+                            </button>
                             <button className="secondary-btn compact-btn" type="button" onClick={() => void handlePreviewEquipmentQr(buildEquipmentRowFromAssignment(assignment), activeSection)}>
                               QR code
                             </button>
@@ -3925,6 +4564,9 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
                       ))
                     ) : null}
                     <div className="card-action-row">
+                      <button className="secondary-btn compact-btn" type="button" onClick={() => openDetailPanel("employee", employee.id)}>
+                        View details
+                      </button>
                       <button className="secondary-btn compact-btn" type="button" onClick={() => handleEditEmployee(employee)}>
                         Edit
                       </button>
@@ -4401,6 +5043,9 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
                     <option value="retired">Retired</option>
                     <option value="lost">Lost</option>
                   </select>
+                  <small className="field-hint">
+                    Items marked as available will appear in the Available stock table after registration.
+                  </small>
                 </label>
                 <label className="field">
                   <span>Device health</span>
@@ -4496,7 +5141,25 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
               </form>
             </div>
           ) : null}
-          <div className="inventory-focus-grid">
+          <div className="stock-control-filter-bar">
+            <div className="filter-chip-row">
+              {([
+                { key: "available", label: "Available", total: localAvailableEquipment.length },
+                { key: "returned", label: "Returned", total: returnedHoldingAssignments.length },
+                { key: "retired", label: "Retired", total: disposedEquipment.length },
+              ] as Array<{ key: StockControlView; label: string; total: number }>).map((option) => (
+                <button
+                  key={option.key}
+                  type="button"
+                  className={`filter-chip${stockControlView === option.key ? " is-active" : ""}`}
+                  onClick={() => setStockControlView(option.key)}
+                >
+                  {option.label} ({option.total})
+                </button>
+              ))}
+            </div>
+          </div>
+          {stockControlView === "available" ? (
             <article className="inventory-focus-card">
               <div className="panel-header">
                 <h3>
@@ -4506,15 +5169,59 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
                 <span>{localAvailableEquipment.length}</span>
               </div>
               <p className="dashboard-subtitle">Ready for assignment.</p>
-              <div className="mini-list">
+              <div className="user-table workflow-stock-table workflow-stock-table-compact">
+                <div className="user-table-head workflow-stock-table-head">
+                  <span>Asset</span>
+                  <span>Status / Type</span>
+                  <span>Location</span>
+                  <span>Cost / Warranty</span>
+                  <span>Depreciation</span>
+                  <span>Lifespan / Replace By</span>
+                  <span>Notes</span>
+                  <span>Actions</span>
+                </div>
                 {localAvailableEquipment.length > 0 ? (
                   paginatedAvailableStock.map((item) => (
-                    <article className="mini-list-card" key={`available-${item.id}`}>
-                      <strong>{item.asset_tag}</strong>
-                      <span>{item.equipment_name}</span>
-                      <span>{item.category_name || "No category"}</span>
-                      {getReplacementStockLabel(item) ? <span>{getReplacementStockLabel(item)}</span> : null}
-                    </article>
+                    <div className="user-table-row workflow-stock-table-row" key={`available-${item.id}`}>
+                      <div className="user-primary-cell">
+                        <strong>{item.asset_tag}</strong>
+                        <span>{item.serial_number}</span>
+                      </div>
+                      <div className="user-secondary-cell">
+                        <strong>{item.equipment_name}</strong>
+                        <span>
+                          <span className={`status-pill status-${item.status}`}>{item.status}</span>
+                        </span>
+                      </div>
+                      <div className="user-secondary-cell">
+                        <strong>{item.category_name || "No category"}</strong>
+                        <span>{item.branch_name || "No branch"}</span>
+                      </div>
+                      <div className="user-secondary-cell">
+                        <strong>{item.purchase_cost ? Number(item.purchase_cost).toLocaleString() : "0"}</strong>
+                        <span>Warranty: {item.warranty_end_date ? item.warranty_end_date.slice(0, 10) : "Not set"}</span>
+                      </div>
+                      <div className="user-secondary-cell">
+                        <strong>{getEquipmentDepreciationSummary(item)}</strong>
+                        <span>{getEquipmentDepreciationDetail(item)}</span>
+                      </div>
+                      <div className="user-secondary-cell">
+                        <strong>{item.lifespan_years ?? 4} years</strong>
+                        <span>{getReplacementDate(item.purchase_date, item.lifespan_years, item.purchase_year)}</span>
+                      </div>
+                      <div className="user-secondary-cell">
+                        <strong>{getReplacementStockLabel(item) || "Ready for assignment"}</strong>
+                        <span>{item.replacement_condition_status || item.location_details || "No note"}</span>
+                      </div>
+                      <div className="table-action-group workflow-stock-table-actions">
+                        <button className="table-action" type="button" onClick={() => void openDetailPanel("equipment", item.id)}>
+                          View details
+                        </button>
+                        <button className="table-action" type="button" onClick={() => void handlePreviewEquipmentQr(item)}>
+                          QR code
+                        </button>
+                      </div>
+                    </div>
                   ))
                 ) : (
                   <p className="loading-text">No available devices.</p>
@@ -4527,7 +5234,8 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
                 }))
               )}
             </article>
-
+          ) : null}
+          {stockControlView === "returned" ? (
             <article className="inventory-focus-card">
               <div className="panel-header">
                 <h3>
@@ -4537,16 +5245,55 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
                 <span>{returnedHoldingAssignments.length}</span>
               </div>
               <p className="dashboard-subtitle">Waiting decision.</p>
-              <div className="mini-list">
+              <div className="user-table workflow-assignment-table workflow-stock-table-compact">
+                <div className="user-table-head workflow-assignment-table-head">
+                  <span>Asset</span>
+                  <span>Status / Employee</span>
+                  <span>Specs / Category</span>
+                  <span>Assigned / Return</span>
+                  <span>Depreciation</span>
+                  <span>Replacement</span>
+                  <span>Actions</span>
+                </div>
                 {returnedHoldingAssignments.length > 0 ? (
-                  paginatedReturnedStock.map(({ assignment, equipment: item }) => (
-                    <article className="mini-list-card" key={`returned-${assignment.id}`}>
-                      <strong>{item.asset_tag}</strong>
-                      <span>{item.equipment_name}</span>
-                      <span>{assignment.employee_name}</span>
-                      {getReplacementAssignmentLabel(assignment) ? <span>{getReplacementAssignmentLabel(assignment)}</span> : null}
-                    </article>
-                  ))
+                  paginatedReturnedStock.map(({ assignment, equipment: item }) =>
+                    item ? (
+                      <div className="user-table-row workflow-assignment-table-row" key={`returned-${assignment.id}`}>
+                        <div className="user-primary-cell">
+                          <strong>{item.asset_tag}</strong>
+                          <span>{item.serial_number}</span>
+                        </div>
+                        <div className="user-secondary-cell">
+                          <strong>{item.equipment_name}</strong>
+                          <span>{assignment.employee_name || "No employee"}</span>
+                        </div>
+                        <div className="user-secondary-cell">
+                          <strong>{item.category_name || "No category"}</strong>
+                          <span>{formatAssignmentEquipmentSpecs(assignment) || "No specs"}</span>
+                        </div>
+                        <div className="user-secondary-cell">
+                          <strong>{formatProfileDate(assignment.assigned_at)}</strong>
+                          <span>Return: {formatProfileDate(assignment.expected_return_date)}</span>
+                        </div>
+                        <div className="user-secondary-cell">
+                          <strong>{getAssignmentDepreciationSummary(assignment)}</strong>
+                          <span>{getAssignmentDepreciationDetail(assignment)}</span>
+                        </div>
+                        <div className="user-secondary-cell">
+                          <strong>{getReplacementAssignmentLabel(assignment) || "Awaiting decision"}</strong>
+                          <span>{assignment.replacement_condition_status || "No replacement note"}</span>
+                        </div>
+                        <div className="table-action-group workflow-stock-table-actions">
+                          <button className="table-action" type="button" onClick={() => void openDetailPanel("assignment", assignment.id)}>
+                            View details
+                          </button>
+                          <button className="table-action" type="button" onClick={() => void handlePreviewEquipmentQr(item)}>
+                            QR code
+                          </button>
+                        </div>
+                      </div>
+                    ) : null,
+                  )
                 ) : (
                   <p className="loading-text">No returned devices.</p>
                 )}
@@ -4558,35 +5305,73 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
                 }))
               )}
             </article>
-
+          ) : null}
+          {stockControlView === "retired" ? (
             <article className="inventory-focus-card">
               <div className="panel-header">
                 <h3>
                   <TriangleAlert size={18} strokeWidth={2.2} />
-                  <span>Disposed</span>
+                  <span>Retired</span>
                 </h3>
                 <span>{disposedEquipment.length}</span>
               </div>
               <p className="dashboard-subtitle">Wasted, lost, or retired.</p>
-              <div className="mini-list">
+              <div className="user-table workflow-stock-table workflow-stock-table-compact">
+                <div className="user-table-head workflow-stock-table-head">
+                  <span>Asset</span>
+                  <span>Status / Type</span>
+                  <span>Location</span>
+                  <span>Cost / Warranty</span>
+                  <span>Depreciation</span>
+                  <span>Lifespan / Replace By</span>
+                  <span>Notes</span>
+                  <span>Actions</span>
+                </div>
                 {disposedEquipment.length > 0 ? (
                   paginatedDisposedStock.map((item) => (
-                    <article className="mini-list-card" key={`disposed-${item.id}`}>
-                      <strong>{item.asset_tag}</strong>
-                      <span>{item.equipment_name}</span>
-                      <span>
-                        <span className={`status-pill status-${item.status}`}>{item.status}</span>
-                      </span>
-                      {getReplacementStockLabel(item) ? (
-                        <span>{getReplacementStockLabel(item)}</span>
-                      ) : null}
-                      {item.replacement_condition_status ? (
-                        <span>Reason: {item.replacement_condition_status}</span>
-                      ) : null}
-                    </article>
+                    <div className="user-table-row workflow-stock-table-row" key={`disposed-${item.id}`}>
+                      <div className="user-primary-cell">
+                        <strong>{item.asset_tag}</strong>
+                        <span>{item.serial_number}</span>
+                      </div>
+                      <div className="user-secondary-cell">
+                        <strong>{item.equipment_name}</strong>
+                        <span>
+                          <span className={`status-pill status-${item.status}`}>{item.status}</span>
+                        </span>
+                      </div>
+                      <div className="user-secondary-cell">
+                        <strong>{item.category_name || "No category"}</strong>
+                        <span>{item.branch_name || "No branch"}</span>
+                      </div>
+                      <div className="user-secondary-cell">
+                        <strong>{item.purchase_cost ? Number(item.purchase_cost).toLocaleString() : "0"}</strong>
+                        <span>Warranty: {item.warranty_end_date ? item.warranty_end_date.slice(0, 10) : "Not set"}</span>
+                      </div>
+                      <div className="user-secondary-cell">
+                        <strong>{getEquipmentDepreciationSummary(item)}</strong>
+                        <span>{getEquipmentDepreciationDetail(item)}</span>
+                      </div>
+                      <div className="user-secondary-cell">
+                        <strong>{item.lifespan_years ?? 4} years</strong>
+                        <span>{getReplacementDate(item.purchase_date, item.lifespan_years, item.purchase_year)}</span>
+                      </div>
+                      <div className="user-secondary-cell">
+                        <strong>{getReplacementStockLabel(item) || "Retired record"}</strong>
+                        <span>{item.replacement_condition_status || "No retirement note"}</span>
+                      </div>
+                      <div className="table-action-group workflow-stock-table-actions">
+                        <button className="table-action" type="button" onClick={() => void openDetailPanel("equipment", item.id)}>
+                          View details
+                        </button>
+                        <button className="table-action" type="button" onClick={() => void handlePreviewEquipmentQr(item)}>
+                          QR code
+                        </button>
+                      </div>
+                    </div>
                   ))
                 ) : (
-                  <p className="loading-text">No disposed items.</p>
+                  <p className="loading-text">No retired items.</p>
                 )}
               </div>
               {renderPaginationBar(disposedStockPageKey, disposedEquipment.length, disposedStockCurrentPage, disposedStockPageSize, (page) =>
@@ -4596,7 +5381,7 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
                 }))
               )}
             </article>
-          </div>
+          ) : null}
           <div className="subpanel-header">
             <h4>Added Items</h4>
             <button
@@ -4609,41 +5394,65 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
           </div>
           {isStockListOpen ? (
             <>
-            <div className="mini-list stock-grid">
+            <div className="user-table workflow-stock-table">
+              <div className="user-table-head workflow-stock-table-head">
+                <span>Asset</span>
+                <span>Status / Type</span>
+                <span>Location</span>
+                <span>Cost / Warranty</span>
+                <span>Depreciation</span>
+                <span>Lifespan / Replace By</span>
+                <span>Notes</span>
+                <span>Actions</span>
+              </div>
               {paginatedBranchStockItems.map((item) => (
-                  <article className="mini-list-card action-card stock-card" key={item.id}>
+                <div className="user-table-row workflow-stock-table-row" key={item.id}>
+                  <div className="user-primary-cell">
                     <strong>{item.asset_tag}</strong>
+                    <span>{item.serial_number}</span>
+                  </div>
+                  <div className="user-secondary-cell">
+                    <strong>{item.equipment_name}</strong>
                     <span>
                       <span className={`status-pill status-${item.status}`}>{item.status}</span>
-                      {" "}
-                      {item.equipment_name}
                     </span>
-                    <span>{item.category_name || "No category"} / {item.branch_name || "No branch"}</span>
-                    {getReplacementStockLabel(item) ? (
-                      <span>{getReplacementStockLabel(item)}</span>
-                    ) : null}
-                    {item.replacement_condition_status ? (
-                      <span>Replacement condition: {item.replacement_condition_status}</span>
-                    ) : null}
-                    <span>
-                      Cost: {item.purchase_cost ? Number(item.purchase_cost).toLocaleString() : "0"} / Warranty: {item.warranty_end_date ? item.warranty_end_date.slice(0, 10) : "Not set"}
-                    </span>
-                    <span>
-                      Lifespan: {item.lifespan_years ?? 4} years / Replace by: {getReplacementDate(item.purchase_date, item.lifespan_years, item.purchase_year)}
-                    </span>
-                    <div className="card-action-row">
-                      <button className="secondary-btn compact-btn" type="button" onClick={() => void handlePreviewEquipmentQr(item)}>
-                        QR code
-                      </button>
-                      <button className="secondary-btn compact-btn" type="button" onClick={() => handleEditEquipment(item)}>
-                        Edit
-                      </button>
-                      <button className="secondary-btn compact-btn btn-soft-danger" type="button" onClick={() => void handleDeleteEquipment(item.id)}>
-                        Delete
-                      </button>
-                    </div>
-                  </article>
-                ))}
+                  </div>
+                  <div className="user-secondary-cell">
+                    <strong>{item.category_name || "No category"}</strong>
+                    <span>{item.branch_name || "No branch"}</span>
+                  </div>
+                  <div className="user-secondary-cell">
+                    <strong>{item.purchase_cost ? Number(item.purchase_cost).toLocaleString() : "0"}</strong>
+                    <span>Warranty: {item.warranty_end_date ? item.warranty_end_date.slice(0, 10) : "Not set"}</span>
+                  </div>
+                  <div className="user-secondary-cell">
+                    <strong>{getEquipmentDepreciationSummary(item)}</strong>
+                    <span>{getEquipmentDepreciationDetail(item)}</span>
+                  </div>
+                  <div className="user-secondary-cell">
+                    <strong>{item.lifespan_years ?? 4} years</strong>
+                    <span>{getReplacementDate(item.purchase_date, item.lifespan_years, item.purchase_year)}</span>
+                  </div>
+                  <div className="user-secondary-cell">
+                    <strong>{getReplacementStockLabel(item) || "No replacement note"}</strong>
+                    <span>{item.replacement_condition_status || "No condition note"}</span>
+                  </div>
+                  <div className="table-action-group workflow-stock-table-actions">
+                    <button className="table-action" type="button" onClick={() => void openDetailPanel("equipment", item.id)}>
+                      View details
+                    </button>
+                    <button className="table-action" type="button" onClick={() => void handlePreviewEquipmentQr(item)}>
+                      QR code
+                    </button>
+                    <button className="table-action" type="button" onClick={() => handleEditEquipment(item)}>
+                      Edit
+                    </button>
+                    <button className="table-action table-action-danger" type="button" onClick={() => void handleDeleteEquipment(item.id)}>
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
             {renderPaginationBar(addedItemsPageKey, branchStockItems.length, addedItemsCurrentPage, addedItemsPageSize, (page) =>
               setRequestPageByKey((current) => ({
@@ -4687,6 +5496,12 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
                   </p>
                   <p>
                     <strong>Purchase cost:</strong> {Number(selectedQrEquipment.purchase_cost ?? 0).toLocaleString()}
+                  </p>
+                  <p>
+                    <strong>Annual depreciation:</strong> {getEquipmentDepreciationSummary(selectedQrEquipment)}
+                  </p>
+                  <p>
+                    <strong>Depreciation detail:</strong> {getEquipmentDepreciationDetail(selectedQrEquipment)}
                   </p>
                   <p>
                     <strong>Warranty end:</strong> {formatQrDate(selectedQrEquipment.warranty_end_date)}
@@ -4816,7 +5631,7 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
           <h3>Reports</h3>
           <button className="panel-link-button export-button" type="button" onClick={handleExportReports}>
             <Download size={16} />
-            <span>Export CSV</span>
+            <span>Export Document</span>
           </button>
         </div>
         <div className="report-summary-grid">
@@ -4852,7 +5667,7 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
           <h3>Request Timeline</h3>
           <button className="panel-link-button export-button" type="button" onClick={handleExportTimeline}>
             <Download size={16} />
-            <span>Export CSV</span>
+            <span>Export Document</span>
           </button>
         </div>
         <div className="filter-chip-row">
@@ -4878,37 +5693,60 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
       <div className="panel-header">
         <h3>My Equipment</h3>
       </div>
-      <div className="mini-list">
+      <div className="user-table workflow-assignment-table">
+        <div className="user-table-head workflow-assignment-table-head">
+          <span>Asset</span>
+          <span>Status / Receipt</span>
+          <span>Type / Specs</span>
+          <span>Depreciation</span>
+          <span>Vendor / Warranty</span>
+          <span>Notes</span>
+          <span>Actions</span>
+        </div>
         {employeeAssignments.length > 0 ? (
           employeeAssignments.map((assignment) => (
-            <article className="mini-list-card action-card" key={assignment.id}>
-              <strong>{assignment.asset_tag}</strong>
-              <span>
-                {assignment.equipment_name} / {getAssignmentStatusLabel(assignment)} /{" "}
+            <div className="user-table-row workflow-assignment-table-row" key={assignment.id}>
+              <div className="user-primary-cell">
+                <strong>{assignment.asset_tag}</strong>
+                <span>{assignment.serial_number}</span>
+              </div>
+              <div className="user-secondary-cell">
+                <strong>{assignment.equipment_name}</strong>
+                <span>{getAssignmentStatusLabel(assignment)}</span>
                 <span className={`status-pill status-${assignment.status === "returned" && isReplacementAssignment(assignment) ? "fulfilled" : assignment.receipt_status}`}>
                   {getAssignmentReceiptLabel(assignment)}
                 </span>
-              </span>
-              <span>{assignment.serial_number} / {assignment.category_name || "No category"}</span>
-              {getReplacementAssignmentLabel(assignment) ? <span>{getReplacementAssignmentLabel(assignment)}</span> : null}
-              {assignment.replacement_condition_status ? <span>Replacement reason: {assignment.replacement_condition_status}</span> : null}
-              {formatAssignmentEquipmentSpecs(assignment) ? <span>{formatAssignmentEquipmentSpecs(assignment)}</span> : null}
-              <span>
-                {assignment.vendor_name || "No vendor"} / {assignment.model_name || "No model"} / {assignment.computer_name || "No computer name"}
-              </span>
-              <span>Warranty: {formatProfileDate(assignment.warranty_end_date)}</span>
-              <span>{currentUser.officeLocation || "No office location"} / {currentUser.jobTitle || "No job title"}</span>
-              <div className="card-action-row">
-                <button className="secondary-btn compact-btn" type="button" onClick={() => void handlePreviewEquipmentQr(buildEquipmentRowFromAssignment(assignment), "my-equipment")}>
+              </div>
+              <div className="user-secondary-cell">
+                <strong>{assignment.category_name || "No category"}</strong>
+                <span>{formatAssignmentEquipmentSpecs(assignment) || "No specs"}</span>
+              </div>
+              <div className="user-secondary-cell">
+                <strong>{getAssignmentDepreciationSummary(assignment)}</strong>
+                <span>{getAssignmentDepreciationDetail(assignment)}</span>
+              </div>
+              <div className="user-secondary-cell">
+                <strong>{assignment.vendor_name || "No vendor"} / {assignment.model_name || "No model"}</strong>
+                <span>Warranty: {formatProfileDate(assignment.warranty_end_date)}</span>
+              </div>
+              <div className="user-secondary-cell">
+                <strong>{getReplacementAssignmentLabel(assignment) || currentUser.officeLocation || "No office location"}</strong>
+                <span>{assignment.replacement_condition_status || currentUser.jobTitle || "No job title"}</span>
+                {assignment.status === "returned" && isReplacementAssignment(assignment) ? (
+                  <span>Replaced on: {formatProfileDate(assignment.replacement_processed_at || assignment.assigned_at)}</span>
+                ) : assignment.received_confirmed_at ? (
+                  <span>Received confirmed: {formatProfileDate(assignment.received_confirmed_at)}</span>
+                ) : null}
+              </div>
+              <div className="table-action-group workflow-stock-table-actions">
+                <button className="table-action" type="button" onClick={() => void openDetailPanel("assignment", assignment.id)}>
+                  View details
+                </button>
+                <button className="table-action" type="button" onClick={() => void handlePreviewEquipmentQr(buildEquipmentRowFromAssignment(assignment), "my-equipment")}>
                   QR code
                 </button>
-              </div>
-              {assignment.status === "returned" && isReplacementAssignment(assignment) ? (
-                <span>Replaced on: {formatProfileDate(assignment.replacement_processed_at || assignment.assigned_at)}</span>
-              ) : assignment.received_confirmed_at ? (
-                <span>Received confirmed: {formatProfileDate(assignment.received_confirmed_at)}</span>
-              ) : (
-                <div className="card-form-stack">
+                {assignment.status === "returned" && isReplacementAssignment(assignment) ? null : assignment.received_confirmed_at ? null : (
+                  <div className="card-form-stack workflow-inline-form">
                   <textarea
                     value={receiptNotes[assignment.id] || ""}
                     onChange={(event) =>
@@ -4927,9 +5765,10 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
                   >
                     Confirm received
                   </button>
-                </div>
-              )}
-            </article>
+                  </div>
+                )}
+              </div>
+            </div>
           ))
         ) : (
           <p className="loading-text">No equipment is assigned to this employee yet.</p>
@@ -4982,7 +5821,14 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
           <p className="dashboard-subtitle">
             Review offboarding or returned devices already received by IT Support. Your approval works together with HR Director approval before the device goes back into the current IT store.
           </p>
-          <div className="mini-list stock-grid">
+          <div className="user-table workflow-return-table">
+            <div className="user-table-head workflow-return-table-head">
+              <span>Asset</span>
+              <span>Employee</span>
+              <span>Return Details</span>
+              <span>Status</span>
+              <span>Actions</span>
+            </div>
             {pendingFinalReturnApprovals.length > 0 ? (
               paginatedReturnReviews.map((item) => {
             const form = finalReturnApprovalForm[item.id] ?? {
@@ -4992,17 +5838,28 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
             const isRejecting = form.decision === "reject";
 
             return (
-              <article className="mini-list-card action-card stock-card" key={item.id}>
-                <strong>{item.asset_tag}</strong>
-                <span>{item.equipment_name}</span>
-                <span>{item.employee_name} / {item.employee_email}</span>
-                <span>Requested: {formatProfileDate(item.requested_at)}</span>
-                <span>Return type: {formatReturnReason(item.return_reason)}</span>
-                <span>{item.request_note || "No employee return note added."}</span>
-                <span>IT Support receipt: {item.received_by_name || item.it_manager_name || "Not recorded"} / {formatProfileDate(item.returned_at || item.it_reviewed_at)}</span>
-                <span>Condition: {item.condition_status || "Not recorded"} / Recommended stock status: {item.disposition || "Not recorded"}</span>
-                <span>{item.received_condition_comment || item.it_review_note || item.intake_note || "No IT Support note recorded."}</span>
-                <span>HRD approval: {item.final_hrd_approval_status || "pending"} / ITD approval: {item.final_itd_approval_status || "pending"}</span>
+              <div className="user-table-row workflow-return-table-row" key={item.id}>
+                <div className="user-primary-cell">
+                  <strong>{item.asset_tag}</strong>
+                  <span>{item.equipment_name}</span>
+                </div>
+                <div className="user-secondary-cell">
+                  <strong>{item.employee_name}</strong>
+                  <span>{item.employee_email}</span>
+                  <span>Requested: {formatProfileDate(item.requested_at)}</span>
+                </div>
+                <div className="user-secondary-cell">
+                  <strong>{formatReturnReason(item.return_reason)}</strong>
+                  <span>{item.request_note || "No employee return note added."}</span>
+                  <span>IT Support receipt: {item.received_by_name || item.it_manager_name || "Not recorded"} / {formatProfileDate(item.returned_at || item.it_reviewed_at)}</span>
+                  <span>{item.received_condition_comment || item.it_review_note || item.intake_note || "No IT Support note recorded."}</span>
+                </div>
+                <div className="user-secondary-cell">
+                  <strong>Condition: {item.condition_status || "Not recorded"}</strong>
+                  <span>Recommended stock status: {item.disposition || "Not recorded"}</span>
+                  <span>HRD approval: {item.final_hrd_approval_status || "pending"} / ITD approval: {item.final_itd_approval_status || "pending"}</span>
+                </div>
+                <div className="workflow-table-actions">
                 <div className="fulfillment-control-grid">
                   <label className="field">
                     <span>IT Director decision</span>
@@ -5050,7 +5907,8 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
                 >
                   {isRejecting ? "Reject final approval" : "Approve final return"}
                 </button>
-              </article>
+                </div>
+              </div>
             );
               })
             ) : (
@@ -5097,7 +5955,14 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
           <p className="dashboard-subtitle">
             Receive the device from the employee, assess the health, record accessories and detailed comments, then trigger final approval for offboarding or the next return step.
           </p>
-          <div className="mini-list stock-grid">
+          <div className="user-table workflow-return-table">
+            <div className="user-table-head workflow-return-table-head">
+              <span>Asset</span>
+              <span>Employee</span>
+              <span>Return Details</span>
+              <span>Status</span>
+              <span>Actions</span>
+            </div>
             {pendingItReturnReviews.length > 0 ? (
               paginatedReturnReviews.map((item) => {
                 const form = itReturnReviewForm[item.id] ?? {
@@ -5110,13 +5975,26 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
                 const isReturningToEmployee = form.action === "return_to_employee";
 
                 return (
-                  <article className="mini-list-card action-card stock-card" key={item.id}>
-                    <strong>{item.asset_tag}</strong>
-                    <span>{item.equipment_name}</span>
-                    <span>{item.employee_name} / {item.employee_email}</span>
-                    <span>Return type: {formatReturnReason(item.return_reason)}</span>
-                    <span>Requested: {formatProfileDate(item.requested_at)}</span>
-                    <span>{item.request_note || "No employee return note added."}</span>
+                  <div className="user-table-row workflow-return-table-row" key={item.id}>
+                    <div className="user-primary-cell">
+                      <strong>{item.asset_tag}</strong>
+                      <span>{item.equipment_name}</span>
+                    </div>
+                    <div className="user-secondary-cell">
+                      <strong>{item.employee_name}</strong>
+                      <span>{item.employee_email}</span>
+                      <span>Requested: {formatProfileDate(item.requested_at)}</span>
+                    </div>
+                    <div className="user-secondary-cell">
+                      <strong>{formatReturnReason(item.return_reason)}</strong>
+                      <span>{item.request_note || "No employee return note added."}</span>
+                    </div>
+                    <div className="user-secondary-cell">
+                      <strong>{form.conditionStatus}</strong>
+                      <span>Disposition: {form.disposition}</span>
+                      <span>{isRejecting ? "Return rejected" : isReturningToEmployee ? "Returning to employee" : "Review in progress"}</span>
+                    </div>
+                    <div className="workflow-table-actions">
                     <div className="fulfillment-control-grid">
                       <label className="field">
                         <span>Decision</span>
@@ -5217,7 +6095,8 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
                     >
                       {isRejecting ? "Reject return" : isReturningToEmployee ? "Return to employee" : item.return_reason === "leaving_job" ? "Acknowledge and send for final approval" : "Record assessment"}
                     </button>
-                  </article>
+                    </div>
+                  </div>
                 );
               })
             ) : (
@@ -5240,7 +6119,14 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
         <p className="dashboard-subtitle">
           Process older returns that still require legacy intake handling after an earlier IT check.
         </p>
-        <div className="mini-list stock-grid">
+        <div className="user-table workflow-return-table">
+          <div className="user-table-head workflow-return-table-head">
+            <span>Asset</span>
+            <span>Employee</span>
+            <span>Return Details</span>
+            <span>Status</span>
+            <span>Actions</span>
+          </div>
           {pendingReturnIntake.length > 0 ? (
             paginatedReturnIntake.map((item) => {
             const form = returnProcessForm[item.id] ?? {
@@ -5252,15 +6138,27 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
             const isRejecting = form.action === "reject";
 
             return (
-              <article className="mini-list-card action-card stock-card" key={item.id}>
-                <strong>{item.asset_tag}</strong>
-                <span>{item.equipment_name}</span>
-                <span>{item.employee_name} / {item.employee_email}</span>
-                <span>Requested: {formatProfileDate(item.requested_at)}</span>
-                <span>{item.request_note || "No employee return note added."}</span>
-                <span>IT checked by: {item.it_manager_name || "IT Manager"} / {formatProfileDate(item.it_reviewed_at)}</span>
-                <span>IT recommendation: {item.condition_status || "No condition"} / {item.disposition || "No recommendation"}</span>
-                <span>{item.it_review_note || "No IT review note added."}</span>
+              <div className="user-table-row workflow-return-table-row" key={item.id}>
+                <div className="user-primary-cell">
+                  <strong>{item.asset_tag}</strong>
+                  <span>{item.equipment_name}</span>
+                </div>
+                <div className="user-secondary-cell">
+                  <strong>{item.employee_name}</strong>
+                  <span>{item.employee_email}</span>
+                  <span>Requested: {formatProfileDate(item.requested_at)}</span>
+                </div>
+                <div className="user-secondary-cell">
+                  <strong>{item.request_note || "No employee return note added."}</strong>
+                  <span>IT checked by: {item.it_manager_name || "IT Manager"} / {formatProfileDate(item.it_reviewed_at)}</span>
+                  <span>{item.it_review_note || "No IT review note added."}</span>
+                </div>
+                <div className="user-secondary-cell">
+                  <strong>{item.condition_status || "No condition"}</strong>
+                  <span>Recommendation: {item.disposition || "No recommendation"}</span>
+                  <span>{isRejecting ? "Rejecting return" : "Ready for intake"}</span>
+                </div>
+                <div className="workflow-table-actions">
                 <div className="fulfillment-control-grid">
                   <label className="field">
                     <span>Decision</span>
@@ -5346,7 +6244,8 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
                 >
                   {isRejecting ? "Reject return" : "Complete intake"}
                 </button>
-              </article>
+                </div>
+              </div>
             );
             })
           ) : (
@@ -5369,7 +6268,14 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
         <p className="dashboard-subtitle">
           Devices sent to maintenance by IT stay here until IT Support Engineer records whether they were repaired or not repairable.
         </p>
-        <div className="mini-list stock-grid">
+        <div className="user-table workflow-return-table">
+          <div className="user-table-head workflow-return-table-head">
+            <span>Asset</span>
+            <span>Location</span>
+            <span>Problem</span>
+            <span>Status</span>
+            <span>Actions</span>
+          </div>
           {openMaintenanceRecords.length > 0 ? (
             paginatedMaintenanceRecords.map((record) => {
               const form = maintenanceCloseForm[record.id] ?? {
@@ -5379,12 +6285,24 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
               };
 
               return (
-                <article className="mini-list-card action-card stock-card" key={`maintenance-${record.id}`}>
-                  <strong>{record.asset_tag}</strong>
-                  <span>{record.equipment_name}</span>
-                  <span>{record.branch_name || "No branch"} / Started: {formatProfileDate(record.started_at)}</span>
-                  <span>Condition: {record.condition_status || "Not recorded"}</span>
-                  <span>{record.problem_description || "No maintenance description."}</span>
+                <div className="user-table-row workflow-return-table-row" key={`maintenance-${record.id}`}>
+                  <div className="user-primary-cell">
+                    <strong>{record.asset_tag}</strong>
+                    <span>{record.equipment_name}</span>
+                  </div>
+                  <div className="user-secondary-cell">
+                    <strong>{record.branch_name || "No branch"}</strong>
+                    <span>Started: {formatProfileDate(record.started_at)}</span>
+                  </div>
+                  <div className="user-secondary-cell">
+                    <strong>{record.problem_description || "No maintenance description."}</strong>
+                    <span>Condition: {record.condition_status || "Not recorded"}</span>
+                  </div>
+                  <div className="user-secondary-cell">
+                    <strong>{form.maintenanceStatus}</strong>
+                    <span>Final stock status: {form.finalDisposition}</span>
+                  </div>
+                  <div className="workflow-table-actions">
                   <div className="fulfillment-control-grid">
                     <label className="field">
                       <span>Repair result</span>
@@ -5449,7 +6367,8 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
                   >
                     Complete maintenance
                   </button>
-                </article>
+                  </div>
+                </div>
               );
             })
           ) : (
@@ -5490,7 +6409,14 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
         <div className="subpanel-header">
           <h4>Request Equipment Return</h4>
         </div>
-        <div className="mini-list">
+        <div className="user-table workflow-return-table">
+          <div className="user-table-head workflow-return-table-head">
+            <span>Asset</span>
+            <span>Assignment</span>
+            <span>Return Type</span>
+            <span>Return Note</span>
+            <span>Actions</span>
+          </div>
           {activeAssignments.length > 0 ? (
             paginatedActiveAssignments.map((assignment) => {
               const hasPendingReturn = employeeReturnRequests.some(
@@ -5500,10 +6426,15 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
               );
 
               return (
-                <article className="mini-list-card action-card" key={assignment.id}>
-                  <strong>{assignment.asset_tag}</strong>
-                  <span>{assignment.equipment_name}</span>
-                  <span>Assigned: {formatProfileDate(assignment.assigned_at)} / Expected return: {formatProfileDate(assignment.expected_return_date)}</span>
+                <div className="user-table-row workflow-return-table-row" key={assignment.id}>
+                  <div className="user-primary-cell">
+                    <strong>{assignment.asset_tag}</strong>
+                    <span>{assignment.equipment_name}</span>
+                  </div>
+                  <div className="user-secondary-cell">
+                    <strong>Assigned: {formatProfileDate(assignment.assigned_at)}</strong>
+                    <span>Expected return: {formatProfileDate(assignment.expected_return_date)}</span>
+                  </div>
                   <label className="field">
                     <span>Return type</span>
                     <select
@@ -5538,15 +6469,17 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
                       disabled={hasPendingReturn}
                     />
                   </label>
-                  <button
-                    className="primary-btn compact-btn"
-                    type="button"
-                    onClick={() => void handleRequestReturn(assignment.id)}
-                    disabled={hasPendingReturn}
-                  >
-                    {hasPendingReturn ? "Return requested" : "Submit return request"}
-                  </button>
-                </article>
+                  <div className="workflow-table-actions">
+                    <button
+                      className="primary-btn compact-btn"
+                      type="button"
+                      onClick={() => void handleRequestReturn(assignment.id)}
+                      disabled={hasPendingReturn}
+                    >
+                      {hasPendingReturn ? "Return requested" : "Submit return request"}
+                    </button>
+                  </div>
+                </div>
               );
             })
           ) : (
@@ -5563,18 +6496,37 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
         <div className="subpanel-header">
           <h4>My Return History</h4>
         </div>
-        <div className="mini-list">
+        <div className="user-table workflow-return-table">
+          <div className="user-table-head workflow-return-table-head">
+            <span>Asset</span>
+            <span>Status</span>
+            <span>Return Type</span>
+            <span>Timeline</span>
+            <span>Notes</span>
+          </div>
           {employeeReturnRequests.length > 0 ? (
             paginatedReturnHistory.map((item) => (
-              <article className="mini-list-card" key={item.id}>
-                <strong>{item.asset_tag}</strong>
-                <span>{item.equipment_name} / {formatReturnStatus(item.return_status)}</span>
-                <span>Return type: {formatReturnReason(item.return_reason)}</span>
-                <span>Requested: {formatProfileDate(item.requested_at)}</span>
-                {item.it_review_note ? <span>IT note: {item.it_review_note}</span> : null}
-                {item.intake_note ? <span>Store note: {item.intake_note}</span> : null}
-                <span>{item.request_note || "No return note added."}</span>
-              </article>
+              <div className="user-table-row workflow-return-table-row" key={item.id}>
+                <div className="user-primary-cell">
+                  <strong>{item.asset_tag}</strong>
+                  <span>{item.equipment_name}</span>
+                </div>
+                <div className="user-secondary-cell">
+                  <strong>{formatReturnStatus(item.return_status)}</strong>
+                </div>
+                <div className="user-secondary-cell">
+                  <strong>{formatReturnReason(item.return_reason)}</strong>
+                </div>
+                <div className="user-secondary-cell">
+                  <strong>Requested: {formatProfileDate(item.requested_at)}</strong>
+                  {item.returned_at || item.it_reviewed_at ? <span>Processed: {formatProfileDate(item.returned_at || item.it_reviewed_at)}</span> : null}
+                </div>
+                <div className="user-secondary-cell">
+                  <strong>{item.request_note || "No return note added."}</strong>
+                  {item.it_review_note ? <span>IT note: {item.it_review_note}</span> : null}
+                  {item.intake_note ? <span>Store note: {item.intake_note}</span> : null}
+                </div>
+              </div>
             ))
           ) : (
             <p className="loading-text">No return requests submitted yet.</p>
@@ -5635,6 +6587,70 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
 
     return renderOverview();
   };
+
+  const renderDetailPanel = () =>
+    selectedDetailPanel ? (
+      <div className="dashboard-detail-overlay" role="presentation" onClick={closeDetailPanel}>
+        <aside
+          className="dashboard-detail-card"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Record details"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="dashboard-detail-head">
+            <div>
+              <p className="dashboard-detail-kicker">{selectedDetailPanel.type}</p>
+              <h3>{selectedDetailPanel.title}</h3>
+              <p>{selectedDetailPanel.subtitle}</p>
+            </div>
+            <button className="secondary-btn compact-btn" type="button" onClick={closeDetailPanel}>
+              Close
+            </button>
+          </div>
+          <div className="dashboard-detail-grid">
+            {selectedDetailPanel.rows.map((row) => (
+              <article className="dashboard-detail-item" key={`${selectedDetailPanel.type}-${row.label}`}>
+                <small>{row.label}</small>
+                <strong>{row.value}</strong>
+              </article>
+            ))}
+          </div>
+          {selectedDetailPanel.qrEquipment ? (
+            <section className="dashboard-detail-qr-section">
+              <div className="panel-header">
+                <h4>Equipment QR</h4>
+              </div>
+              {isEquipmentQrLoading ? (
+                <p className="loading-text">Generating item QR code...</p>
+              ) : equipmentQrError ? (
+                <p className="error-text">{equipmentQrError}</p>
+              ) : selectedQrEquipment && equipmentQrImageUrl && selectedQrEquipment.id === selectedDetailPanel.qrEquipment.id ? (
+                <div className={`qr-card stacked-qr-card${selectedQrAudience === "employee" ? " employee-qr-card" : ""}`}>
+                  <div className="qr-preview">
+                    <img src={equipmentQrImageUrl} alt={`${selectedQrEquipment.asset_tag} QR code`} />
+                  </div>
+                  <div className="qr-details">
+                    <h4>{selectedQrEquipment.equipment_name}</h4>
+                    <p><strong>Asset tag:</strong> {selectedQrEquipment.asset_tag}</p>
+                    <p><strong>Serial number:</strong> {selectedQrEquipment.serial_number}</p>
+                    <p><strong>Model:</strong> {selectedQrEquipment.model_name || "Not set"}</p>
+                    <p><strong>Computer name:</strong> {selectedQrEquipment.computer_name || "Not set"}</p>
+                    <p><strong>Specs:</strong> {formatEquipmentSpecs(selectedQrEquipment) || "Not set"}</p>
+                    <p><strong>Warranty end:</strong> {formatQrDate(selectedQrEquipment.warranty_end_date)}</p>
+                    <button className="primary-btn qr-download-btn" type="button" onClick={handleDownloadEquipmentQr}>
+                      Download QR
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <p className="loading-text">Preparing QR details...</p>
+              )}
+            </section>
+          ) : null}
+        </aside>
+      </div>
+    ) : null;
 
   return (
     <div className={`app-dashboard-shell ${isSidebarOpen ? "sidebar-open" : "sidebar-collapsed"}`}>
@@ -5715,6 +6731,7 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
               onClick={() => setActiveSection("notifications")}
             >
               <Bell size={19} strokeWidth={2.4} />
+              {unreadNotificationCount > 0 ? <span className="notification-count-badge">{unreadNotificationCount}</span> : null}
             </button>
             <UserMenu user={user} onOpenProfile={() => setActiveSection("settings")} onLogout={onLogout} />
           </div>
@@ -5787,6 +6804,7 @@ function WorkflowRoleDashboard({ user, onLogout, onUserUpdate, roleView }: Workf
           <span>Version 1.0.0</span>
         </footer>
       </div>
+      {renderDetailPanel()}
     </div>
   );
 }

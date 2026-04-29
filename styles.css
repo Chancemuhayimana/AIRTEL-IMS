@@ -1,20 +1,20 @@
 :root {
   font-family: "Trebuchet MS", "Segoe UI", sans-serif;
-  color: #5f1414;
-  background: #f7f2f0;
+  color: #020202;
+  background: #f3f6f8;
   line-height: 1.5;
   font-weight: 400;
   color-scheme: light;
-  --brand-red: #d91f26;
-  --brand-red-deep: #8f1418;
-  --brand-red-soft: #f7dada;
-  --brand-dashboard-red: #c31b21;
-  --brand-sidebar: var(--brand-dashboard-red);
+  --brand-red: lch(39.65% 77.37 37.31);
+  --brand-red-deep: #0f0e0e;
+  --brand-red-soft: #dceef8;
+  --brand-dashboard-red:#d40909;
+  --brand-sidebar: #d40909;
   --brand-panel: #ffffff;
-  --brand-line: rgba(185, 22, 28, 0.14);
-  --brand-text: #5f1414;
-  --brand-muted: #8e5656;
-  --shadow-soft: 0 16px 34px rgba(100, 22, 22, 0.08);
+  --brand-line: rgba(29, 111, 165, 0.14);
+  --brand-text: #17324d;
+  --brand-muted: #587287;
+  --shadow-soft: 0 16px 34px rgba(23, 50, 77, 0.08);
 }
 
 * {
@@ -32,8 +32,8 @@ body {
   min-width: 320px;
   min-height: 100vh;
   background:
-    radial-gradient(circle at top left, rgba(217, 31, 38, 0.08), transparent 24%),
-    linear-gradient(180deg, #f9f5f3 0%, #f3edeb 100%);
+    radial-gradient(circle at top left, rgba(29, 111, 165, 0.08), transparent 24%),
+    linear-gradient(180deg, #f7fbfd 0%, #edf4f7 100%);
 }
 
 a {
@@ -1023,6 +1023,69 @@ select {
   outline: none;
 }
 
+.notification-count-badge {
+  position: absolute;
+  top: -4px;
+  right: -2px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 0.35rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #f97316;
+  color: #ffffff;
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.24);
+}
+
+.install-app-prompt {
+  position: fixed;
+  right: 1.1rem;
+  bottom: 1.1rem;
+  z-index: 75;
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  max-width: min(92vw, 420px);
+  padding: 0.95rem 1rem;
+  border: 1px solid rgba(29, 111, 165, 0.14);
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(238, 246, 251, 0.96));
+  box-shadow: 0 20px 45px rgba(23, 50, 77, 0.16);
+  backdrop-filter: blur(8px);
+}
+
+.install-app-prompt.is-installed {
+  max-width: min(92vw, 360px);
+}
+
+.install-app-copy {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.install-app-copy strong {
+  color: #17324d;
+  font-size: 0.98rem;
+  line-height: 1.2;
+}
+
+.install-app-copy span {
+  color: var(--brand-muted);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.install-app-button {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .topbar-logo-chip {
   display: grid;
   gap: 0.1rem;
@@ -1522,6 +1585,85 @@ select {
   color: #111111;
 }
 
+.workflow-stock-table-head,
+.workflow-stock-table-row {
+  grid-template-columns: 1fr 1.05fr 1fr 1fr 1.2fr 1fr 1.1fr 1.2fr;
+}
+
+.workflow-assignment-table-head,
+.workflow-assignment-table-row {
+  grid-template-columns: 0.95fr 1.1fr 1fr 1fr 1.2fr 1.1fr 1.2fr;
+}
+
+.workflow-request-table-head,
+.workflow-request-table-row {
+  grid-template-columns: 0.95fr 1fr 1.15fr 1.2fr 1fr 1.35fr;
+}
+
+.workflow-request-table-head {
+  display: none;
+}
+
+.workflow-request-table-row {
+  grid-template-columns: 1fr;
+  gap: 0;
+  padding: 0;
+  border-radius: 16px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.workflow-request-table-row > div {
+  padding: 0.9rem 1rem;
+}
+
+.workflow-request-table-row > div:not(:last-child) {
+  border-bottom: 1px solid var(--brand-line);
+}
+
+.workflow-request-table-row .workflow-table-actions {
+  background: linear-gradient(180deg, rgba(220, 238, 248, 0.45), rgba(255, 255, 255, 0.96));
+}
+
+.workflow-return-table-head,
+.workflow-return-table-row {
+  grid-template-columns: 0.95fr 1fr 1fr 1.1fr 1.45fr;
+}
+
+.workflow-stock-table .user-secondary-cell strong {
+  font-size: 0.9rem;
+}
+
+.workflow-assignment-table .user-secondary-cell strong {
+  font-size: 0.9rem;
+}
+
+.workflow-request-table .user-secondary-cell strong,
+.workflow-return-table .user-secondary-cell strong {
+  font-size: 0.9rem;
+}
+
+.workflow-stock-table .user-secondary-cell span,
+.workflow-stock-table .user-primary-cell span,
+.workflow-assignment-table .user-secondary-cell span,
+.workflow-assignment-table .user-primary-cell span,
+.workflow-request-table .user-secondary-cell span,
+.workflow-request-table .user-primary-cell span,
+.workflow-return-table .user-secondary-cell span,
+.workflow-return-table .user-primary-cell span {
+  line-height: 1.4;
+}
+
+.workflow-stock-table-compact .user-table-head,
+.workflow-stock-table-compact .user-table-row {
+  padding-inline: 0.8rem;
+}
+
+.workflow-stock-table-actions {
+  justify-content: flex-start;
+  align-items: flex-start;
+}
+
 .user-primary-cell,
 .user-secondary-cell {
   display: grid;
@@ -1955,7 +2097,7 @@ select {
 }
 
 .stock-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   margin-top: 1rem;
 }
 
@@ -2117,6 +2259,21 @@ select {
   gap: 0.55rem;
   height: 100%;
   align-content: start;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  align-items: start;
+}
+
+.action-card > strong {
+  grid-column: 1 / -1;
+}
+
+.action-card > .card-action-row,
+.action-card > .card-form-stack,
+.action-card > .workflow-step-list,
+.action-card > .fulfillment-control-grid,
+.action-card > .field,
+.action-card > .form-message {
+  grid-column: 1 / -1;
 }
 
 .card-form-stack {
@@ -2146,6 +2303,103 @@ select {
   display: flex;
   gap: 0.65rem;
   flex-wrap: wrap;
+}
+
+.dashboard-detail-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  justify-items: end;
+  background: rgba(16, 24, 36, 0.24);
+  backdrop-filter: blur(4px);
+}
+
+.dashboard-detail-card {
+  width: min(100%, 560px);
+  height: 100%;
+  padding: 1.4rem;
+  overflow: auto;
+  background: linear-gradient(180deg, #ffffff, #f7fbfd);
+  border-left: 1px solid var(--brand-line);
+  box-shadow: -24px 0 48px rgba(23, 50, 77, 0.14);
+}
+
+.dashboard-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.dashboard-detail-kicker {
+  margin: 0 0 0.3rem;
+  color: var(--brand-red);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.dashboard-detail-head h3 {
+  margin: 0;
+  color: #111111;
+}
+
+.dashboard-detail-head p:last-child {
+  margin: 0.35rem 0 0;
+  color: var(--brand-muted);
+}
+
+.dashboard-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 0.85rem;
+}
+
+.dashboard-detail-qr-section {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--brand-line);
+}
+
+.dashboard-detail-item {
+  display: grid;
+  gap: 0.28rem;
+  padding: 0.85rem 0.9rem;
+  border: 1px solid var(--brand-line);
+  border-radius: 14px;
+  background: #ffffff;
+}
+
+.dashboard-detail-item small {
+  color: var(--brand-muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.dashboard-detail-item strong {
+  color: #111111;
+  line-height: 1.4;
+}
+
+.workflow-inline-form {
+  width: 100%;
+  min-width: 220px;
+}
+
+.workflow-table-stack,
+.workflow-table-actions {
+  display: grid;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.workflow-table-actions {
+  align-content: start;
 }
 
 .compact-btn {
@@ -2249,6 +2503,10 @@ select {
   background: var(--brand-red);
   color: #ffffff;
   border-color: var(--brand-red);
+}
+
+.stock-control-filter-bar {
+  margin: 0.4rem 0 1rem;
 }
 
 .export-button {
@@ -2891,6 +3149,18 @@ select {
     padding: 1rem;
   }
 
+  .install-app-prompt {
+    left: 1rem;
+    right: 1rem;
+    bottom: 1rem;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .install-app-button {
+    width: 100%;
+  }
+
   .dashboard-footer {
     padding: 1rem;
   }
@@ -2922,3 +3192,5 @@ select {
     grid-template-columns: 1fr;
   }
 }
+
+

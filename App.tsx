@@ -2,13 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { SESSION_KEY } from "./config";
 import LoginPage from "./pages/LoginPage";
 import AdminDashboardPage from "./pages/AdminDashboardPage";
-import BranchManagerDashboardPage from "./pages/BranchManagerDashboardPage";
 import HrDashboardPage from "./pages/HrDashboardPage";
 import ItManagerDashboardPage from "./pages/ItManagerDashboardPage";
 import ItSupportDashboardPage from "./pages/ItSupportDashboardPage";
 import EmployeeDashboardPage from "./pages/EmployeeDashboardPage";
 import HRDirectorDashboard from "./pages/HRDirectorDashboard";
 import AiChatAssistant from "./components/AiChatAssistant";
+import InstallAppPrompt from "./components/InstallAppPrompt";
 import { fetchJson, getApiMessage } from "./api";
 import { API_BASE_URL } from "./config";
 import type { LoggedInUser } from "./types";
@@ -16,6 +16,11 @@ import type { LoggedInUser } from "./types";
 const INACTIVITY_LIMIT_MS = 5 * 60 * 1000;
 const WARNING_WINDOW_MS = 60 * 1000;
 const SESSION_ACTIVITY_KEY = "airtel-ims-last-activity";
+
+type BeforeInstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
+};
 
 function navigateTo(path: string, replace = false) {
   const method = replace ? "replaceState" : "pushState";
@@ -90,6 +95,11 @@ function App() {
   });
   const [forcedPasswordError, setForcedPasswordError] = useState("");
   const [isForcedPasswordSaving, setIsForcedPasswordSaving] = useState(false);
+  const [installPromptEvent, setInstallPromptEvent] = useState<BeforeInstallPromptEvent | null>(null);
+  const [isInstallingApp, setIsInstallingApp] = useState(false);
+  const [isAppInstalled, setIsAppInstalled] = useState(() =>
+    window.matchMedia("(display-mode: standalone)").matches || Boolean((window.navigator as Navigator & { standalone?: boolean }).standalone),
+  );
   const inactivityTimeoutRef = useRef<number | null>(null);
   const warningTimeoutRef = useRef<number | null>(null);
   const warningIntervalRef = useRef<number | null>(null);
@@ -98,6 +108,27 @@ function App() {
     const handleRouteChange = () => setPathname(normalizePath(window.location.pathname));
     window.addEventListener("popstate", handleRouteChange);
     return () => window.removeEventListener("popstate", handleRouteChange);
+  }, []);
+
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setInstallPromptEvent(event as BeforeInstallPromptEvent);
+    };
+
+    const handleInstalled = () => {
+      setIsAppInstalled(true);
+      setInstallPromptEvent(null);
+      setIsInstallingApp(false);
+    };
+
+    window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+    window.addEventListener("appinstalled", handleInstalled);
+
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+      window.removeEventListener("appinstalled", handleInstalled);
+    };
   }, []);
 
   useEffect(() => {
@@ -315,8 +346,39 @@ function App() {
     setIsSessionWarningVisible(false);
   };
 
+  const handleInstallApp = async () => {
+    if (!installPromptEvent) {
+      return;
+    }
+
+    setIsInstallingApp(true);
+
+    try {
+      await installPromptEvent.prompt();
+      const choice = await installPromptEvent.userChoice;
+
+      if (choice.outcome === "accepted") {
+        setIsAppInstalled(true);
+      }
+
+      setInstallPromptEvent(null);
+    } finally {
+      setIsInstallingApp(false);
+    }
+  };
+
   if (!user || normalizePath(pathname) === "/") {
-    return <LoginPage onLoginSuccess={handleLoginSuccess} />;
+    return (
+      <>
+        <LoginPage onLoginSuccess={handleLoginSuccess} />
+        <InstallAppPrompt
+          canInstall={Boolean(installPromptEvent) && !isAppInstalled}
+          isInstalled={isAppInstalled}
+          isInstalling={isInstallingApp}
+          onInstall={() => void handleInstallApp()}
+        />
+      </>
+    );
   }
 
   let dashboardView;
@@ -413,8 +475,16 @@ function App() {
           </div>
         </div>
       ) : null}
+      <InstallAppPrompt
+        canInstall={Boolean(installPromptEvent) && !isAppInstalled}
+        isInstalled={isAppInstalled}
+        isInstalling={isInstallingApp}
+        onInstall={() => void handleInstallApp()}
+      />
     </>
   );
 }
 
 export default App;
+
+

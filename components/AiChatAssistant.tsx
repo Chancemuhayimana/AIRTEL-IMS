@@ -35,6 +35,8 @@ function getStarterPrompts(role: string) {
       "What is the status of my request?",
       "Which devices are assigned to me?",
       "How do I return a device?",
+      "How is device depreciation calculated?",
+      "What makes this project special?",
     ];
   }
 
@@ -43,6 +45,8 @@ function getStarterPrompts(role: string) {
       "How many devices are available in my branch?",
       "Show assets under maintenance",
       "What requests are waiting for fulfillment?",
+      "How is device depreciation calculated?",
+      "What makes this project special?",
     ];
   }
 
@@ -51,6 +55,8 @@ function getStarterPrompts(role: string) {
       "What requests are waiting for IT approval?",
       "Summarize open issues",
       "Show maintenance workload",
+      "How is device depreciation calculated?",
+      "What makes this project special?",
     ];
   }
 
@@ -59,13 +65,19 @@ function getStarterPrompts(role: string) {
       "What requests are waiting for HR approval?",
       "How does the request workflow work?",
       "Summarize pending requests",
+      "How is device depreciation calculated?",
+      "What makes this project special?",
     ];
   }
 
   return [
+    "How many users do we have in the system?",
+    "Give me a full system overview",
+    "How is device depreciation calculated?",
     "Summarize inventory status",
     "Show pending requests",
     "Find asset TAG-102",
+    "What makes this project special?",
   ];
 }
 
@@ -79,8 +91,8 @@ function AiChatAssistant({ user }: AiChatAssistantProps) {
       id: "welcome",
       role: "assistant",
       text: [
-        `Hello ${user.firstName}. I am your read-only Airtel IMS assistant.`,
-        "I can answer questions about requests, approvals, assignments, inventory, returns, maintenance, issues, and workflow steps without changing any data.",
+        `Hello ${user.firstName}. I am your Airtel IMS assistant.`,
+        "I can answer questions about requests, approvals, assignments, inventory, returns, maintenance, issues, workflow steps, and broader work questions while keeping system records unchanged.",
       ],
     },
   ]);
@@ -153,7 +165,7 @@ function AiChatAssistant({ user }: AiChatAssistantProps) {
             <div className="ai-chat-title-group">
               <span className="ai-chat-badge">
                 <Bot size={15} strokeWidth={2.2} />
-                Read-only
+                Smart assistant
               </span>
               <strong>Airtel IMS Assistant</strong>
             </div>
@@ -198,7 +210,7 @@ function AiChatAssistant({ user }: AiChatAssistantProps) {
             <input
               value={message}
               onChange={(event) => setMessage(event.target.value)}
-              placeholder="Ask about requests, stock, maintenance, issues, or workflow..."
+              placeholder="Ask about IMS data, workflow, improvements, writing help, or any work question..."
             />
             <button className="primary-btn compact-btn ai-chat-send" type="submit" disabled={isSending}>
               <Send size={15} strokeWidth={2.2} />
